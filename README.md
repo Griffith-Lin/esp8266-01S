@@ -4,7 +4,7 @@
 
 ## 目录
 
-- [1. 工具链说明](#1-工具链说明)
+- [1. 工具链与 SDK 准备](#1-工具链与-sdk-准备)
 - [2. 环境变量配置](#2-环境变量配置)
 - [3. Python 依赖安装](#3-python-依赖安装)
 - [4. 创建示例工程](#4-创建示例工程)
@@ -15,35 +15,175 @@
 
 ---
 
-## 1. 工具链说明
+## 1. 工具链与 SDK 准备
 
-使用 `mingw32.exe` 进入终端。
+### 1.1 下载工具链压缩包
 
-> **注意**：`esp8266_toochain` 不同步至代码仓库。
+从乐鑫官方下载地址获取以下两个压缩包（Windows 32 位）：
 
-ESP8266_RTOS_SDK 位于：
+| 压缩包 | 下载地址 |
+| --- | --- |
+| `xtensa-lx106-elf-gcc8_4_0-esp-2020r3-win32.zip` | <https://dl.espressif.com/dl/xtensa-lx106-elf-gcc8_4_0-esp-2020r3-win32.zip> |
+| `esp32_win32_msys2_environment_and_toolchain-20181001.zip` | <https://dl.espressif.com/dl/esp32_win32_msys2_environment_and_toolchain-20181001.zip> |
 
+分别解压到 `esp8266_toochain/` 目录下：
+
+| 压缩包 | 解压后目录 | 作用 |
+| --- | --- | --- |
+| `xtensa-lx106-elf-gcc8_4_0-esp-2020r3-win32.zip` | `xtensa-lx106-elf/` | Xtensa 交叉编译器（`gcc`、`ld`、`objcopy` 等） |
+| `esp32_win32_msys2_environment_and_toolchain-20181001.zip` | `msys32/` | MSYS2 环境，提供 `mingw32.exe` 终端 |
+
+两个都是**解压即用**的绿色包，不需要安装，也不需要写注册表，删掉文件夹就等于卸载。
+
+#### 这两个分别是什么？
+
+**① `xtensa-lx106-elf` —— 干活的：交叉编译器**
+
+ESP8266 芯片里的 CPU 是 **Xtensa** 架构，跟你的电脑（Intel/AMD 的 x86）**不是同一种语言**。你写的 C 代码，用电脑上普通的编译器编译出来的程序，ESP8266 根本跑不了。
+
+所以需要一个"翻译官"：**它运行在你的 Windows 电脑上，产出的却是 ESP8266 能执行的机器码**。这种"在 A 平台上生成 B 平台代码"的编译器，就叫**交叉编译器**（cross compiler）。
+
+它里面装着：
+
+| 工具 | 用途 |
+| --- | --- |
+| `xtensa-lx106-elf-gcc` | 编译器，把 `.c` 翻译成 ESP8266 的机器码 |
+| `xtensa-lx106-elf-ld` | 链接器，把编译出的一堆碎片拼成完整固件 |
+| `xtensa-lx106-elf-objcopy` | 格式转换，生成能烧进 Flash 的 `.bin` 文件 |
+| `xtensa-lx106-elf-objdump` | 反汇编，调试时用来查看机器码 |
+
+名字是拼出来的，拆开读就懂了：
+
+```text
+xtensa - lx106 - elf - gcc8_4_0 - esp-2020r3 - win32
+   ↑       ↑      ↑       ↑            ↑          ↑
+ CPU架构  核心型号 文件格式 GCC版本   乐鑫发布版本  运行在Windows
 ```
-G:\github\esp-01S\esp8266_toochain\msys32\home\Administrator\esp\ESP8266_RTOS_SDK
+
+ESP8266EX 的内核正是 Xtensa **L106**，所以叫 `lx106`。ESP32 用的是 L6，工具链名字是 `xtensa-esp32-elf`——看一眼名字就知道是给哪块芯片用的。
+
+**② `msys32` —— 提供场地的：Linux 风格的终端环境**
+
+ESP8266_RTOS_SDK 的构建系统是**照着 Linux 写的**：靠 `make` 驱动一堆 `.mk` 文件，脚本里到处是 `ls`、`cp`、`rm`、`sed` 这类 Linux 命令。Windows 自带的 cmd 和 PowerShell 都不认识它们，直接跑会寸步难行。
+
+`msys32`（Minimal SYStem 2）相当于在 Windows 上开了个**"假装是 Linux"的小房间**，里面备齐了 bash 和那些 Linux 命令。`mingw32.exe` 就是这个房间的门——双击它，你就进到了一个长得像 Linux 的终端里。
+
+> **名字里为什么带 `esp32`？** 这个 MSYS2 环境本身和芯片无关，只负责提供 shell 和基础命令。乐鑫当年把它打包给 ESP32 用，后来 ESP8266_RTOS_SDK 的 Windows 教程直接沿用了同一个包，所以名字没改。
+
+**一句话总结分工**：`msys32` 负责把环境搭起来（让你能敲命令），`xtensa-lx106-elf` 负责把代码变成固件（让芯片能跑）。
+
+完成后目录结构如下：
+
+```text
+esp8266_toochain/
+├── msys32/                      ← esp32_win32_msys2_environment_and_toolchain-20181001.zip
+│   └── home/Administrator/
+│       └── esp/
+│           ├── ESP8266_RTOS_SDK/
+│           └── hello_world/
+└── xtensa-lx106-elf/            ← xtensa-lx106-elf-gcc8_4_0-esp-2020r3-win32.zip
+    └── bin/
 ```
 
-> **路径限制**：ESP8266_RTOS_SDK 构建系统**不支持**在 SDK 或项目路径中使用空格。
+> **版本配对**：`gcc8_4_0-esp-2020r3` 是 ESP8266_RTOS_SDK v3.4 对应的编译器版本，不要与其他版本的 SDK 混用。
+
+### 1.2 获取 ESP8266_RTOS_SDK
+
+使用 `esp8266_toochain/msys32/mingw32.exe` 打开终端，然后克隆 SDK（这里克隆不了就用cmd克隆，然后再用mingw32.exe进行其它操作）：
+
+```bash
+mkdir -p ~/esp
+cd ~/esp
+git clone --recursive https://github.com/espressif/ESP8266_RTOS_SDK.git
+```
+
+`--recursive` **不能省略**：SDK 依赖多个子模块（mbedtls、lwip 等），漏掉会导致后续编译缺文件。如果已经克隆但忘了加，可以补跑：
+
+```bash
+cd ~/esp/ESP8266_RTOS_SDK
+git submodule update --init --recursive
+```
+
+mingw32 中的 `~` 对应 Windows 下的 `esp8266_toochain\msys32\home\Administrator`，因此 SDK 最终位于：
+
+```text
+..\仓库名\esp8266_toochain\msys32\home\Administrator\esp\ESP8266_RTOS_SDK
+```
+
+> **不同步至代码仓库**：`esp8266_toochain` 整个目录已在 `.gitignore` 中排除——工具链体积大，且 SDK 本身有自己的 Git 仓库。
+
+### 1.3 路径限制
+
+ESP8266_RTOS_SDK 构建系统**不支持**在 SDK 或项目路径中使用空格，安装与克隆时请全程避开带空格的目录。（路径别带有中文）
+
+### 1.4 安装 Python（32 位）
+
+SDK 的构建脚本依赖 Python 3，且需要 **32 位**版本。
+
+下载地址：<https://www.python.org/downloads/windows/>
+
+在页面的 **Stable Releases** 表格中找到目标版本（如 Python 3.13.x），下载 **Windows installer (32-bit)** 一项——注意不要点成 64-bit，也不要下载 embeddable package（那是给嵌入用的，没有 pip）。
+
+安装时保持默认的 **Install Now** 即可，安装路径一般是：
+
+```text
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313-32
+```
+
+对应到 mingw32 中的写法（第 2 节要用的）：
+
+```bash
+/c/Users/Administrator/AppData/Local/Programs/Python/Python313-32
+```
+
+> **目录名怎么看位数**：32 位装的目录名结尾带 `-32`（`Python313-32`），64 位则不带后缀（`Python313`）。两者可以同时装在同一台机器上，互不干扰。
+>
+> **路径不一样的情况**：如果安装时选了 "Install for all users"，路径会变成 `C:\Program Files (x86)\Python313-32`，第 2 节的 `export PATH` 要跟着改。安装路径可以在安装向导第一屏的 "Customize installation" 里确认，装完后也能在终端用 `where python`（cmd）查看。
+
+`AppData` 是隐藏目录，资源管理器里看不到属于正常现象，直接在地址栏粘贴上面的路径即可打开。
+
+安装完成后验证：
+
+```bash
+which python      # 应指向 Python313-32 下的 python.exe
+python -V         # 应输出 Python 3.13.x
+```
 
 ---
 
 ## 2. 环境变量配置
 
-`mingw32` **无法读取 Windows 系统环境变量**，因此每次进入终端都需要手动设置。虽然 `IDF_PATH` 会和系统的 esp-idf 冲突，但冲突本身无所谓——根本原因是读不到。
+
+
+  
+
+
+
+
+
+
+  
+
+
+  
+
+
+
+
+
+
+`mingw32` **无法读取 Windows 系统环境变量**，因此每次进入mingw32.exe都需要手动设置。虽然 `IDF_PATH` 会和系统的 esp-idf 冲突，但冲突本身无所谓——根本原因是读不到。
 
 ```bash
 # SDK 路径
 export IDF_PATH=~/esp/ESP8266_RTOS_SDK
 
-# Python（须确认是 Python 3，且为 32 位）
+# Python（须确认路径下是 Python 3，且为 32 位，安装见 1.4 节）。
+# :$PATH 不能省，$PATH 的意思就是"把path原来的内容抄过来"，因为path里面有很多其它的路径，不能丢掉。把$PATH放到末尾意味着，新添加的路径放到所有其它路径的最前面。 
 export PATH="/c/Users/Administrator/AppData/Local/Programs/Python/Python313-32:$PATH"
 
 # 交叉编译工具链
-export PATH="$PATH:/g/github/esp-01S/esp8266_toochain/xtensa-lx106-elf/bin"
+export PATH="$PATH:/g/github/仓库名/esp8266_toochain/xtensa-lx106-elf/bin"
 ```
 
 ---
