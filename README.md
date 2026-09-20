@@ -213,7 +213,7 @@ python -m pip install "setuptools<71" wheel
 将 `get-started/hello_world` 复制到工作目录：
 
 ```bash
-cd ~/esp
+cd ~/project
 cp -r $IDF_PATH/examples/get-started/hello_world .
 ```
 
@@ -224,7 +224,7 @@ cp -r $IDF_PATH/examples/get-started/hello_world .
 ### 5.1 项目配置
 
 ```bash
-cd ~/esp/hello_world
+cd ~/project/hello_world
 make menuconfig
 ```
 
