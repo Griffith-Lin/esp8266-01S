@@ -1,0 +1,123 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ESP: Build",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "c:\\Users\\Administrator\\.vscode\\extensions\\dzantemir.esp8266-idf-1.93.6\\python\\launcher.py",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\project\\hello_world\\.vscode\\esp-spec-build.json"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": "$esp-idf-gcc"
+        },
+        {
+            "label": "ESP: Build App",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "c:\\Users\\Administrator\\.vscode\\extensions\\dzantemir.esp8266-idf-1.93.6\\python\\launcher.py",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\project\\hello_world\\.vscode\\esp-spec-build-app.json"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": "$esp-idf-gcc"
+        },
+        {
+            "label": "ESP: Build Bootloader",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "c:\\Users\\Administrator\\.vscode\\extensions\\dzantemir.esp8266-idf-1.93.6\\python\\launcher.py",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\project\\hello_world\\.vscode\\esp-spec-build-boot.json"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": "$esp-idf-gcc"
+        },
+        {
+            "label": "ESP: Clean",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "c:\\Users\\Administrator\\.vscode\\extensions\\dzantemir.esp8266-idf-1.93.6\\python\\launcher.py",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\project\\hello_world\\.vscode\\esp-spec-clean.json"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": "$esp-idf-gcc"
+        },
+        {
+            "label": "ESP: Full Clean",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "c:\\Users\\Administrator\\.vscode\\extensions\\dzantemir.esp8266-idf-1.93.6\\python\\launcher.py",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\project\\hello_world\\.vscode\\esp-spec-fullclean.json"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": "$esp-idf-gcc"
+        },
+        {
+            "label": "ESP: Size",
+            "type": "process",
+            "command": "python",
+            "args": [
+                "c:\\Users\\Administrator\\.vscode\\extensions\\dzantemir.esp8266-idf-1.93.6\\python\\launcher.py",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\project\\hello_world\\.vscode\\esp-spec-size.json"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": "$esp-idf-gcc"
+        }
+    ]
+}

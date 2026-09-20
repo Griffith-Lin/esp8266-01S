@@ -1,0 +1,31 @@
+{
+    "configurations": [
+        {
+            "name": "ESP8266",
+            "intelliSenseMode": "gcc-x86",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\ESP8266_RTOS_SDK/components/**"
+            ],
+            "defines": [
+                "ESP_PLATFORM",
+                "ESP8266",
+                "__xtensa__",
+                "__XTENSA__",
+                "__XTENSA_LX106__"
+            ],
+            "compilerPath": "C:\\Users\\Administrator\\.espressif\\tools\\xtensa-lx106-elf\\esp-2020r3-49-gd5524c1-8.4.0\\xtensa-lx106-elf\\bin\\xtensa-lx106-elf-gcc.exe",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++14",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\ESP8266_RTOS_SDK"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}

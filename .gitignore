@@ -1,3 +1,6 @@
 
 #esp8266工具链
 esp8266_toochain/
+
+#构建文件
+build/

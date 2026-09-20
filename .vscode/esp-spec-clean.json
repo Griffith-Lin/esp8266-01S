@@ -1,0 +1,8 @@
+{
+  "action": "idf",
+  "args": [
+    "clean"
+  ],
+  "idfPath": "g:\\github\\esp-01S\\esp8266_toochain\\msys32\\home\\Administrator\\esp\\ESP8266_RTOS_SDK",
+  "sdkVersion": "v3.4-115-g858c7c2e"
+}
