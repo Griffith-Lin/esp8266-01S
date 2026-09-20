@@ -106,7 +106,7 @@ git submodule update --init --recursive
 mingw32 中的 `~` 对应 Windows 下的 `esp8266_toochain\msys32\home\Administrator`，因此 SDK 最终位于：
 
 ```text
-..\仓库名\esp8266_toochain\msys32\home\Administrator\esp\ESP8266_RTOS_SDK
+..\esp8266_toochain\msys32\home\Administrator\esp\ESP8266_RTOS_SDK
 ```
 
 > **不同步至代码仓库**：`esp8266_toochain` 整个目录已在 `.gitignore` 中排除——工具链体积大，且 SDK 本身有自己的 Git 仓库。
@@ -152,37 +152,18 @@ python -V         # 应输出 Python 3.13.x
 
 ## 2. 环境变量配置
 
-
-
-  
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-
-
 `mingw32` **无法读取 Windows 系统环境变量**，因此每次进入mingw32.exe都需要手动设置。虽然 `IDF_PATH` 会和系统的 esp-idf 冲突，但冲突本身无所谓——根本原因是读不到。
 
 ```bash
-# SDK 路径
-export IDF_PATH=~/esp/ESP8266_RTOS_SDK
+# 添加环境变量：SDK 
+export IDF_PATH=/home/Administrator/esp/ESP8266_RTOS_SDK
 
-# Python（须确认路径下是 Python 3，且为 32 位，安装见 1.4 节）。
+# 添加环境变量：Python（须确认路径下是 Python 3，且为 32 位，安装见 1.4 节）。
 # :$PATH 不能省，$PATH 的意思就是"把path原来的内容抄过来"，因为path里面有很多其它的路径，不能丢掉。把$PATH放到末尾意味着，新添加的路径放到所有其它路径的最前面。 
 export PATH="/c/Users/Administrator/AppData/Local/Programs/Python/Python313-32:$PATH"
 
-# 交叉编译工具链
-export PATH="$PATH:/g/github/仓库名/esp8266_toochain/xtensa-lx106-elf/bin"
+# 添加环境变量：交叉编译工具链
+export PATH="$PATH:/g/github/esp8266_toochain/xtensa-lx106-elf/bin"
 ```
 
 ---
@@ -254,7 +235,8 @@ make menuconfig
 > 烧录前需先让 ESP-01S 进入**下载模式**（将io0接地）。
 
 ```bash
-make flash
+make -j10 #构建，ESP-01S 项目建议调用 4 线程，实测 10 线程也可行。
+make ESPPORT=COM8 ESPBAUD=57600 flash #烧录成功率跟中间全链路有关，王牌解决方法是降波特率，插紧线
 ```
 
 ### 5.3 打开串口监视器 （先进入运行模式：断开 GPIO0 与 GND 的连线（ESP-01S 板载 10k 上拉，浮空即为高电平），然后复位。）
@@ -264,15 +246,7 @@ make monitor
 
 退出监视器：<kbd>Ctrl</kbd> + <kbd>]</kbd>
 
-### 5.4 加速编译
-
-```bash
-make -j4 flash
-```
-
-ESP-01S 项目建议最多 4 线程，实测 10 线程也可行。
-
-### 5.5 构建失败时
+### 5.4 构建失败时，尝试清除构建文件
 
 ```bash
 make clean
