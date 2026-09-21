@@ -1,0 +1,18 @@
+#The partition table must strictly adhere to two principles: 
+#1. It must be entirely in English. 2. The annotations should be on a separate line.
+
+# Name,   Type, SubType, Offset,   Size, Flags
+#
+# Custom 2MB layout for ESP-01S (2MB flash variant).
+# NOTE: this file MUST stay pure ASCII - the SDK parser (gen_esp32part.py)
+# decodes it as ASCII and aborts on any non-ASCII byte, comments included.
+# NOTE: do NOT put trailing comments after the last comma - that column is
+# parsed as flags, and any unknown flag is a hard error.
+#
+nvs,       data, nvs,     0x9000,   0x4000,
+otadata,   data, ota,     0xd000,   0x2000,
+phy_init,  data, phy,     0xf000,   0x1000,
+# main app - extends up to the end of 2MB flash
+factory,   app,  factory, 0x10000,  0x1E0000,
+# reserved OTA slot - delete and give back to factory if unused
+ota_0,     app,  ota_0,   0x1F0000, 0x10000,

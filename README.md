@@ -1,6 +1,8 @@
+
+
 # ESP-01S (ESP8266) 开发笔记
 
-在 Windows 下使用 ESP8266_RTOS_SDK 开发 ESP-01S 流程。（建议先学会sdk裸开发，后面再使用vscode插件ESP8266-IDF简化开发操作）
+在 Windows 下使用 ESP8266_RTOS_SDK 开发 ESP-01S 流程。（建议先学会sdk裸开发作为保底手段，后面再使用vscode插件ESP8266-IDF简化开发操作）
 
 ## 目录
 
@@ -11,6 +13,7 @@
 - [5. 配置与构建](#5-配置与构建)
 - [6. 波特率说明](#6-波特率说明)
 - [7. 启动日志分析](#7-启动日志分析)
+- [8. 自定义分区表](#8-自定义分区表)
 
 ---
 
@@ -364,4 +367,123 @@ Hello world!
 - 这段信息由 ESP8266 的 **ROM Bootloader**（固化在芯片内部的只读存储器）打印。
 - ROM Bootloader **固定使用 74880 波特率**输出，无法更改。
 - 这就是 menuconfig 中把 monitor 波特率设为 74880 的原因：**只有这样才能看到完整的启动链路**。若设为 115200，这几行关键的硬件自检信息就会变成乱码。
+
+---
+
+## 8. 自定义分区表
+
+默认用的是 SDK 里写死的分区表，想自己分配 Flash 空间，就要切到自定义模式。
+
+### 8.1 开启方式
+
+在 menuconfig 中：
+
+```text
+Partition Table  --->
+    Partition Table (Custom partition table CSV)  --->
+    (partitions_2mb.csv) Custom partition CSV file
+```
+
+- 第一项选 **Custom partition table CSV**（另外两个选项是 `Single factory app, no OTA` 和 `Factory app, two OTA definitions`）。
+- 第二项填 csv 的文件名，这就是你自己的分区表。
+- **这个文件名是相对于项目根目录解析的**，所以 csv 必须放在项目根目录下（Kconfig 原文：`This path is evaluated relative to the project root directory.`）。
+
+### 8.2 两条铁律
+
+这个 csv 的容错度极低，**违反任意一条，整个工程直接编译不了**：
+
+| # | 规则 | 违反后果 |
+| --- | --- | --- |
+| 1 | 注释必须**单独开行**，以 `#` 开头 | 行末注释会被当成 Flags 列 → `unknown flag` |
+| 2 | 文件必须**纯英文**（纯 ASCII），注释里也不能有中文 | 读取时解码失败 → `UnicodeDecodeError` |
+
+### 8.3 为什么必须纯英文？
+
+分区表是由 Python 脚本 `gen_esp32part.py` 解析的，而它打开文件的方式是：
+
+```python
+# parttool.py:100
+with open(partition_table_file, "r") as f:
+    partition_table = gen.PartitionTable.from_csv(f.read())
+```
+
+注意是 `open(..., "r")` —— **没有指定 `encoding`**，于是 Python 会用**系统默认编码**（中文 Windows 上是 GBK），而不是 UTF-8：
+
+```text
+UnicodeDecodeError: 'gbk' codec can't decode byte 0xaf in position 53: illegal multibyte sequence
+```
+
+csv 一旦存成 **UTF-8 且含中文**，这些 UTF-8 字节按 GBK 去解就会失败。某些环境下默认编码还会退化成 ASCII，报的是另一种：
+
+```text
+UnicodeDecodeError: 'ascii' codec can't decode byte 0xe8 in position 50: ordinal not in range(128)
+```
+
+> **写在注释里也救不了**：解码发生在 `f.read()` —— **读取整个文件的那一刻**，早于任何逐行处理，更早于 `#` 的判断。所以"我把中文放在注释行，应该会被跳过吧"是行不通的，实测一样报错。
+
+### 8.4 为什么注释必须单独开行？
+
+csv 按逗号切分后，每一列的含义是固定的，第 6 列（`fields[5]`）是 **Flags**：
+
+```text
+# Name,   Type, SubType, Offset,   Size, Flags
+    ↑       ↑      ↑        ↑        ↑      ↑
+ fields[0]  [1]    [2]      [3]      [4]    [5]
+```
+
+而 Flags 列只认一个值 `encrypted`：
+
+```python
+flags = fields[5].split(":")
+for flag in flags:
+    if flag in cls.FLAGS:          # FLAGS = {"encrypted": 0}
+        setattr(res, flag, True)
+    elif len(flag) > 0:
+        raise InputError("CSV flag column contains unknown flag '%s'" % flag)
+```
+
+所以在字段行末尾写 `..., 0x1E0000,  <-- 注释` ，这个注释会被当作 Flags 列的内容：
+
+```text
+Error at line 4: CSV flag column contains unknown flag '<-- main app'
+```
+
+**这一条和中文无关** —— 就算注释是纯英文，只要写在字段行末尾就一样报错。
+
+### 8.5 为什么这个坑特别难查
+
+分区表是在 CMake 的 **configure 阶段**就被读取解析的，根本轮不到编译。所以 csv 里一个字节的错误，表现出来是**整个工程全线报错**：
+
+```text
+-- Configuring incomplete, errors occurred!
+FAILED: build.ninja
+ninja: error: rebuilding 'build.ninja': subcommand failed
+```
+
+这时候 build、clean、menuconfig、size **每一个** target 都会失败 —— 因为每个 target 都要先过 configure 这一关。遇到这种"什么都不能用了"的场面，**先回头检查分区表 csv**，不要急着怀疑工具链、环境变量或者代码。
+
+### 8.6 本项目当前使用的分区表
+
+2MB 版本 ESP-01S 的布局，见根目录的 [`partitions_2mb.csv`](partitions_2mb.csv)：
+
+```text
+# Name,   Type, SubType, Offset,   Size, Flags
+#
+# Custom 2MB layout for ESP-01S (2MB flash variant).
+# NOTE: this file MUST stay pure ASCII - the SDK parser (gen_esp32part.py)
+# decodes it as ASCII and aborts on any non-ASCII byte, comments included.
+# NOTE: do NOT put trailing comments after the last comma - that column is
+# parsed as flags, and any unknown flag is a hard error.
+#
+nvs,       data, nvs,     0x9000,   0x4000,
+otadata,   data, ota,     0xd000,   0x2000,
+phy_init,  data, phy,     0xf000,   0x1000,
+# main app - extends up to the end of 2MB flash
+factory,   app,  factory, 0x10000,  0x1E0000,
+# reserved OTA slot - delete and give back to factory if unused
+ota_0,     app,  ota_0,   0x1F0000, 0x10000,
+```
+
+烧录后，启动日志里会打印实际生效的分区表（格式见第 7 节），可以用来核对是否改对了。
+
 

@@ -35,6 +35,11 @@ Constraints responsible for most build failures:
 - **Python must be the 32-bit install** (`Python313-32`), not the 64-bit one.
 - **`setuptools` must stay pinned `<71`.** v71+ removed `pkg_resources`, which the SDK Makefiles
   import; installing the latest silently breaks the build.
+- **`partitions_2mb.csv` must stay pure ASCII.** `gen_esp32part.py` decodes it as ASCII and aborts on
+  any non-ASCII byte — *including inside comments*, which are decoded before the `#` check. A trailing
+  comment after the last comma is also fatal: that column is the `flags` field, and anything other than
+  `encrypted` raises `unknown flag`. Keep notes on their own `#` lines, in ASCII. Because this file is
+  read during CMake *configure*, a bad byte breaks every target, not just the build.
 
 The SDK is frozen at v3.4 (final ESP8266_RTOS_SDK release). Do not suggest upgrading it or porting
 this project to ESP-IDF — ESP-IDF v4+ dropped ESP8266 entirely.
