@@ -1,7 +1,8 @@
 
 #esp8266工具链
-esp8266_toochain/
+/esp8266_toochain
 
 #构建文件
-build/
+/build
 /.vscode
+/sdkconfig.old
