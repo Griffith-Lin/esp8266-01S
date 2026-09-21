@@ -1,6 +1,6 @@
 # ESP-01S (ESP8266) 开发笔记
 
-在 Windows 下使用 ESP8266_RTOS_SDK 开发 ESP-01S 流程。
+在 Windows 下使用 ESP8266_RTOS_SDK 开发 ESP-01S 流程。（也可以使用vscode插件ESP8266-IDF）
 
 ## 目录
 

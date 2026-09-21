@@ -4,3 +4,4 @@ esp8266_toochain/
 
 #构建文件
 build/
+/.vscode
