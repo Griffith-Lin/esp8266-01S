@@ -1,4 +1,4 @@
-#The partition table must strictly adhere to two principles: 
+#The partition table must strictly adhere to two principles:
 #1. It must be entirely in English. 2. The annotations should be on a separate line.
 
 # Name,   Type, SubType, Offset,   Size, Flags
@@ -8,11 +8,41 @@
 # decodes it as ASCII and aborts on any non-ASCII byte, comments included.
 # NOTE: do NOT put trailing comments after the last comma - that column is
 # parsed as flags, and any unknown flag is a hard error.
+# NOTE: offset is a POSITION in flash, size is a LENGTH. Both are in BYTES.
+#       Every line must satisfy: offset + size == next line's offset.
+#
+# Two OTA slots, no factory partition (A/B scheme):
+#
+#   0x000000  bootloader         32K  (implicit, not listed here)
+#   0x008000  partition table     4K  (implicit, not listed here)
+#   0x009000  nvs                16K
+#   0x00D000  otadata             8K
+#   0x00F000  phy_init            4K
+#   0x010000  ota_0             992K  <- app binary is flashed here
+#   0x108000  ota_1             992K  <- OTA writes here, then switches
+#   0x200000  end of 2MB flash         (0x108000 + 0xF8000 = 0x200000)
+#
+# Why no factory partition:
+#   With blank otadata and no factory, the bootloader logs "No factory image,
+#   trying OTA 0" and boots ota_0. See bootloader_utility.c,
+#   bootloader_utility_get_selected_boot_partition().
+#
+# How the two slots alternate:
+#   The bootloader picks ota_seq % app_count out of otadata, so it flips
+#   between the slots on its own. In the app, call
+#   esp_ota_get_next_update_partition() to find the slot to write, and
+#   esp_ota_set_boot_partition() to switch to it after a successful write.
+#
+# WARNING - there is NO automatic rollback in ESP8266_RTOS_SDK v3.4:
+#   esp_ota_select_entry_t holds only {ota_seq, seq_label, crc} - there is no
+#   state field, and there is no esp_ota_mark_app_valid_cancel_rollback().
+#   The bootloader boots whatever slot otadata points at, good or bad.
+#   A bad update therefore boot-loops until you recover it over serial.
 #
 nvs,       data, nvs,     0x9000,   0x4000,
 otadata,   data, ota,     0xd000,   0x2000,
 phy_init,  data, phy,     0xf000,   0x1000,
-# main app - extends up to the end of 2MB flash
-factory,   app,  factory, 0x10000,  0x1E0000,
-# reserved OTA slot - delete and give back to factory if unused
-ota_0,     app,  ota_0,   0x1F0000, 0x10000,
+# app slot 0 - the app binary is flashed here by default
+ota_0,     app,  ota_0,   0x10000,  0xF8000,
+# app slot 1 - OTA writes here, then switches otadata to it
+ota_1,     app,  ota_1,   0x108000, 0xF8000,
