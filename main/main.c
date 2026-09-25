@@ -3,25 +3,32 @@
    这个文件只放"业务"：继电器怎么用、收到什么命令该做什么、程序怎么把模块串起来。
    联网的细节都被挡在两个模块后面了：
 
-     wifi_sta.c     连热点、把凭据存 NVS、断线重连、连不上自动进配网
+     wifi_sta.c     连热点、把凭据存 NVS、断线重连
      tcp_client.c   连服务端、收发字节（纯传输，不知道"开灯"是什么）
 
    曾经还有一个 ota.c 负责远程升级，已经移出本工程 —— 本板 1MB 单槽，
    两个 app 槽放不下这个固件。见 ../ota-for-larger-flash/。
 
-   ── 换 WiFi 热点【不用】改代码、也不用重烧 ──────────────────────
+   ── 换 WiFi 热点 ──────────────────────────────────────────────
 
      节点还连得上   → 发 TCP 命令：wifi <SSID>,<密码>
-     节点已经连不上 → 等 60 秒，它会自己进 SmartConfig 配网，
-                      手机连上新热点、用 ESP-TOUCH App 广播密码即可
-     想立刻配网     → 发 TCP 命令：config
 
      wifi_sta.c 顶部那两个宏只是【出厂默认值】，NVS 里有凭据就以 NVS 为准。
 
+   ⚠ 节点一旦连不上，就【没有】远程通道了 —— 只能拆下来重烧。
+
+     以前这里有一条 SmartConfig 兜底（手机 App 把密码编成广播包发出来，
+     节点在空口上收），那条路已经整个拆掉。理由和实测数据见 README §9.7：
+     它的链路太长（手机 WiFi 驱动的广播行为 → 路由器 → ESP 的混杂模式），
+     任何一环不配合就死，而且【没有反馈】，串口上什么都看不出来。
+
+     所以改主节点凭据的顺序必须是：
+       ① 先发 TCP 命令 wifi <新SSID>,<新密码>
+       ② 再改主节点
+     反过来做，这块板子就只能重烧了。
+
    ⚠ "改配置"和"换固件"是两件事，别混。
-     改 WiFi 密码靠上面那三条路；换固件只能插串口线重烧。
-     任何走网络的方案（包括远程升级）都救不了"已经连不上"的节点 ——
-     网络都断了，它根本够不着。真能救的是 SmartConfig。
+     改 WiFi 密码靠上面那条 TCP 命令；换固件只能插串口线重烧。
 
    要改服务端 IP/端口  → tcp_client.c 顶部
    要改能识别的命令    → 本文件下面"命令解析"那一节
@@ -157,16 +164,13 @@ static int  s_cmd_len = 0;
 #define KEY_KAI_GBK    "\xBF\xAA\xB5\xC6"           /* 开灯 */
 #define KEY_GUAN_UTF8  "\xE5\x85\xB3\xE7\x81\xAF"   /* 关灯 */
 #define KEY_GUAN_GBK   "\xB9\xD8\xB5\xC6"           /* 关灯 */
-#define KEY_NET_UTF8   "\xE9\x85\x8D\xE7\xBD\x91"   /* 配网 */
-#define KEY_NET_GBK    "\xC5\xE4\xCD\xF8"           /* 配网 */
 
-/* 一条命令对应一个"动作"。原先这里是个 bool turn_on，
-   只装得下"开/关"两种；加了配网之后变成三种，就换成枚举 ——
-   再来第四种（比如"查询状态"）也只是往下面表里加一行。 */
+/* 一条命令对应一个"动作"。原先这里是个 bool turn_on，只装得下"开/关"
+   两种；换成枚举之后，再来第三种（比如"查询状态"）也只是往下面那张表里
+   加一行、往 switch 里加一个 case。 */
 typedef enum {
     ACT_ON,       /* 继电器吸合 */
     ACT_OFF,      /* 继电器释放 */
-    ACT_CONFIG,   /* 进 SmartConfig 配网模式 */
 } cmd_action_t;
 
 typedef struct {
@@ -180,17 +184,20 @@ static const cmd_t s_cmds[] = {
     { KEY_KAI_GBK,   4, ACT_ON  },
     { KEY_GUAN_UTF8, 6, ACT_OFF },
     { KEY_GUAN_GBK,  4, ACT_OFF },
-    { KEY_NET_UTF8,  6, ACT_CONFIG },
-    { KEY_NET_GBK,   4, ACT_CONFIG },
     { "on",          2, ACT_ON  },   /* ASCII 别名，小写；不区分大小写的版本没做 */
     { "off",         3, ACT_OFF },
-    /* ⚠ "config" 里面【含】"on"（c-on-fig）。
-       光靠"找到一条就算"是不行的 —— 那样收到 "config" 会先开灯。
-       下面 cmd_try_one() 挑的是【位置最靠前】的那条：
-       "config" 从下标 0 开始，"on" 从下标 1 开始，所以 config 胜出。
-       这也是为什么那张表要扫完再决定，而不是找到第一条就返回。 */
-    { "config",      6, ACT_CONFIG },
 };
+
+/* ⚠ 这张表是【扫完再决定】的，不是"找到第一条就返回" —— 别改成那样。
+   规则：在所有命中的关键字里，挑【在缓冲区里位置最靠前】的那一个。
+
+   为什么需要这条规则：关键字可能互相【包含】。历史上这里有过一条
+   "config"（进 SmartConfig 配网，已经拆掉），它里面就含着 "on"
+   （c-on-fig）—— 找到第一条就返回的话，收到 "config" 会先开灯。
+   "config" 从下标 0 开始、"on" 从下标 1 开始，按"最靠前"才选得对。
+
+   现在表里已经没有互相包含的关键字了，规则仍然留着：
+   它是正确的通用规则，而下一个加进来的关键字随时可能再踩同一个坑。 */
 
 /* 带参数的命令：wifi <SSID>,<密码>
 
@@ -200,8 +207,11 @@ static const cmd_t s_cmds[] = {
    （见 cmd_try_one()），否则 "开灯wifi A,B\n" 的执行顺序就乱了。
 
    为什么用逗号而不是空格分隔？因为 SSID 里【可以有空格】——
-   本项目默认那个 "DESKTOP-HTLNPUV 4127" 就带一个。
-   用空格当分隔符的话，它会被劈成两半。 */
+   比如热点叫 "My Home WiFi"，用空格当分隔符就会被劈成两半。
+
+   ⚠ 这条和当前默认值无关。本项目现在连的是 ESP32 的 SoftAP
+     "ESP32-S3-host"，没有空格 —— 但别因为"现在的名字没空格"
+     就把分隔符改成空格，那等于把这条命令悄悄写窄了。 */
 #define KEY_WIFI       "wifi "
 #define KEY_WIFI_LEN   5
 
@@ -339,20 +349,6 @@ static bool cmd_try_one(void)
     case ACT_OFF:
         relay_off();
         tcp_client_send("LED OFF (GPIO0 = LOW)\r\n", 0);
-        break;
-
-    case ACT_CONFIG:
-        /* 手动进配网。
-
-           平时用不着 —— wifi_sta.c 里那条管理任务会在"连不上 60 秒"时
-           自动进去。这条命令是给"我知道热点马上要改，想提前配"用的。
-
-           ⚠ 这里【不能】等它跑完：
-           配网要听 90 秒，本回调跑在 tcp_client 的任务上，
-           一阻塞整条 TCP 连接就收不了也发不出，看起来像死机。
-           wifi_sta_start_smartconfig() 内部会自己起一条临时任务。 */
-        tcp_client_send("CONFIG MODE (see serial log)\r\n", 0);
-        wifi_sta_start_smartconfig();
         break;
     }
 
