@@ -14,10 +14,22 @@
 #include "wifi_sta.h"
 #include "tcp_client.h"
 
-/* 服务端（网络调试助手 TCP Server）的地址和端口。
-   192.168.137.1 是 Windows 热点那张虚拟网卡的地址，也就是 ESP 的网关 ——
-   必须和串口里打印出来的"网关"一致，不一致就连不上。 */
-#define TCP_SERVER_IP    "192.168.137.1"
+/* 服务端（跑在 ESP32 主节点上的 TCP Server）的地址和端口。
+
+   192.168.4.1 是 ESP32 开 SoftAP 时的【固定地址】：
+   它不是 DHCP 分的，是 tcpip_adapter_init() 里写死的常量
+   （components/tcpip_adapter/tcpip_adapter_lwip.c:207-209，
+    ip / gw 都赋成 192.168.4.1，掩码 255.255.255.0）。
+
+   所以这一行可以放心硬编码，而且和"网关"永远是同一个地址 ——
+   串口启动日志里「网关」那一行应该打印出 192.168.4.1。
+
+   ⚠ 这正是当初选 SoftAP 方案、而不是"两个都连路由器"的理由：
+     走路由器的话主节点的地址是 DHCP 分的，租约一换这一行就失效，
+     还得回头去补静态 IP 或 mDNS。
+
+   ⚠ 端口 8086 必须和 ESP32 那边 TCP Server 监听的端口一致。 */
+#define TCP_SERVER_IP    "192.168.4.1"
 #define TCP_SERVER_PORT  8086
 
 #define TCP_RX_BUF_SIZE     128
