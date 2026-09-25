@@ -3,10 +3,26 @@
    这个文件只放"业务"：继电器怎么用、收到什么命令该做什么、程序怎么把模块串起来。
    联网的细节都被挡在两个模块后面了：
 
-     wifi_sta.c     连热点、断线重连、打印 IP
+     wifi_sta.c     连热点、把凭据存 NVS、断线重连、连不上自动进配网
      tcp_client.c   连服务端、收发字节（纯传输，不知道"开灯"是什么）
 
-   要改热点名/密码     → wifi_sta.c 顶部
+   曾经还有一个 ota.c 负责远程升级，已经移出本工程 —— 本板 1MB 单槽，
+   两个 app 槽放不下这个固件。见 ../ota-for-larger-flash/。
+
+   ── 换 WiFi 热点【不用】改代码、也不用重烧 ──────────────────────
+
+     节点还连得上   → 发 TCP 命令：wifi <SSID>,<密码>
+     节点已经连不上 → 等 60 秒，它会自己进 SmartConfig 配网，
+                      手机连上新热点、用 ESP-TOUCH App 广播密码即可
+     想立刻配网     → 发 TCP 命令：config
+
+     wifi_sta.c 顶部那两个宏只是【出厂默认值】，NVS 里有凭据就以 NVS 为准。
+
+   ⚠ "改配置"和"换固件"是两件事，别混。
+     改 WiFi 密码靠上面那三条路；换固件只能插串口线重烧。
+     任何走网络的方案（包括远程升级）都救不了"已经连不上"的节点 ——
+     网络都断了，它根本够不着。真能救的是 SmartConfig。
+
    要改服务端 IP/端口  → tcp_client.c 顶部
    要改能识别的命令    → 本文件下面"命令解析"那一节
 
@@ -116,6 +132,7 @@ static void relay_off(void)
                UTF-8                GBK
      开灯      E5 BC 80 E7 81 AF    BF AA B5 C6     ← 6 字节 vs 4 字节
      关灯      E5 85 B3 E7 81 AF    B9 D8 B5 C6
+     配网      E9 85 8D E7 BD 91    C5 E4 CD F8
 
    谁说了算？
      · 本文件里写的 "开灯" 是什么字节 —— 由【这个 .c 文件存成什么编码】决定。
@@ -140,22 +157,140 @@ static int  s_cmd_len = 0;
 #define KEY_KAI_GBK    "\xBF\xAA\xB5\xC6"           /* 开灯 */
 #define KEY_GUAN_UTF8  "\xE5\x85\xB3\xE7\x81\xAF"   /* 关灯 */
 #define KEY_GUAN_GBK   "\xB9\xD8\xB5\xC6"           /* 关灯 */
+#define KEY_NET_UTF8   "\xE9\x85\x8D\xE7\xBD\x91"   /* 配网 */
+#define KEY_NET_GBK    "\xC5\xE4\xCD\xF8"           /* 配网 */
+
+/* 一条命令对应一个"动作"。原先这里是个 bool turn_on，
+   只装得下"开/关"两种；加了配网之后变成三种，就换成枚举 ——
+   再来第四种（比如"查询状态"）也只是往下面表里加一行。 */
+typedef enum {
+    ACT_ON,       /* 继电器吸合 */
+    ACT_OFF,      /* 继电器释放 */
+    ACT_CONFIG,   /* 进 SmartConfig 配网模式 */
+} cmd_action_t;
 
 typedef struct {
-    const char *key;      /* 关键字（按字节比较） */
-    int         len;      /* 关键字的【字节数】—— 中文不是 1 个字 1 个字节 */
-    bool        turn_on;
+    const char   *key;    /* 关键字（按字节比较） */
+    int           len;    /* 关键字的【字节数】—— 中文不是 1 个字 1 个字节 */
+    cmd_action_t  action;
 } cmd_t;
 
 static const cmd_t s_cmds[] = {
-    { KEY_KAI_UTF8,  6, true  },
-    { KEY_KAI_GBK,   4, true  },
-    { KEY_GUAN_UTF8, 6, false },
-    { KEY_GUAN_GBK,  4, false },
-    { "on",          2, true  },   /* ASCII 别名，小写；不区分大小写的版本没做 */
-    { "off",         3, false },
+    { KEY_KAI_UTF8,  6, ACT_ON  },
+    { KEY_KAI_GBK,   4, ACT_ON  },
+    { KEY_GUAN_UTF8, 6, ACT_OFF },
+    { KEY_GUAN_GBK,  4, ACT_OFF },
+    { KEY_NET_UTF8,  6, ACT_CONFIG },
+    { KEY_NET_GBK,   4, ACT_CONFIG },
+    { "on",          2, ACT_ON  },   /* ASCII 别名，小写；不区分大小写的版本没做 */
+    { "off",         3, ACT_OFF },
+    /* ⚠ "config" 里面【含】"on"（c-on-fig）。
+       光靠"找到一条就算"是不行的 —— 那样收到 "config" 会先开灯。
+       下面 cmd_try_one() 挑的是【位置最靠前】的那条：
+       "config" 从下标 0 开始，"on" 从下标 1 开始，所以 config 胜出。
+       这也是为什么那张表要扫完再决定，而不是找到第一条就返回。 */
+    { "config",      6, ACT_CONFIG },
 };
+
+/* 带参数的命令：wifi <SSID>,<密码>
+
+   它没法放进上面那张表 —— 表里每条都是【定长关键字】，匹配到就能按
+   固定长度抠掉；而这条后面挂着两个长度不定的参数。
+   所以单独处理，但它的【先后顺序】仍然要和表里那些一起排
+   （见 cmd_try_one()），否则 "开灯wifi A,B\n" 的执行顺序就乱了。
+
+   为什么用逗号而不是空格分隔？因为 SSID 里【可以有空格】——
+   本项目默认那个 "DESKTOP-HTLNPUV 4127" 就带一个。
+   用空格当分隔符的话，它会被劈成两半。 */
+#define KEY_WIFI       "wifi "
+#define KEY_WIFI_LEN   5
+
+/* 802.11 协议的上限。wifi_sta.c 里也有一份，这里重写一遍是因为
+   那是模块内部的事，不值得为它去动头文件。 */
+#define WIFI_SSID_MAX  32
+#define WIFI_PASS_MAX  64
 #define CMD_COUNT  (sizeof(s_cmds) / sizeof(s_cmds[0]))
+
+/* 处理一条 wifi 命令。p 指向缓冲区里找到的 "wifi "。
+
+   返回值跟别的命令不一样，要留意：
+     true  —— 这一行处理完了（不管成功失败），已经从缓冲区里抠掉，调用方继续
+     false —— 【行还没收全】，什么都没做，等下一批字节
+
+   为什么必须等到整行？因为 TCP 是字节流，一次 recv 可能只到
+   "wifi DESKTOP" 就断了，这时候后面的密码还没来。
+   硬猜的话会把半截 SSID 当成真的存进 NVS。
+
+   所以规矩是：以换行结尾。网络调试助手发的时候记得勾"发送新行"。 */
+static bool cmd_do_wifi(char *p)
+{
+    char   *nl;
+    char   *comma;
+    char   *next;
+    char    ssid[WIFI_SSID_MAX + 1];
+    char    pass[WIFI_PASS_MAX + 1];
+    size_t  n;
+    bool    valid = true;
+
+    nl = strpbrk(p, "\r\n");
+    if (nl == NULL) {
+        return false;              /* 行还没到齐 */
+    }
+
+    p += KEY_WIFI_LEN;             /* 跳过 "wifi " 本身 */
+
+    comma = memchr(p, ',', (size_t)(nl - p));
+    if (comma == NULL) {
+        printf("[cmd] ✗ wifi 命令里没有逗号。格式：wifi <SSID>,<密码>\n");
+        valid = false;
+    } else {
+        n = (size_t)(comma - p);
+        if (n == 0 || n > WIFI_SSID_MAX) {
+            printf("[cmd] ✗ SSID 长度 %u 不合法（1~%d 字节）\n",
+                   (unsigned)n, WIFI_SSID_MAX);
+            valid = false;
+        } else {
+            memcpy(ssid, p, n);
+            ssid[n] = '\0';
+
+            /* 密码从逗号后一直到行尾。允许是空串（开放热点），
+               所以这里不像 SSID 那样检查 n == 0。 */
+            p = comma + 1;
+            n = (size_t)(nl - p);
+            if (n > WIFI_PASS_MAX) {
+                printf("[cmd] ✗ 密码超过 %d 字节\n", WIFI_PASS_MAX);
+                valid = false;
+            } else {
+                memcpy(pass, p, n);
+                pass[n] = '\0';
+            }
+        }
+    }
+
+    /* 参数没问题才真去改。改失败时 wifi_sta_set_credentials() 内部会打原因，
+       而且【不会】动当前连接 —— 所以这条命令是安全的，
+       打错字不会把节点弄成砖。 */
+    if (valid) {
+        printf("[cmd] 换热点 → \"%s\"\n", ssid);
+        tcp_client_send(wifi_sta_set_credentials(ssid, pass)
+                        ? "WIFI OK (reconnecting)\r\n"
+                        : "WIFI FAIL (see serial log)\r\n", 0);
+    } else {
+        tcp_client_send("WIFI FAIL (bad format)\r\n", 0);
+    }
+
+    /* 不管成功失败，这一整行都要从缓冲区里抠掉。
+       漏掉的话它会永远卡在最前面，把后面所有命令都堵死。 */
+    next = nl;
+    while (*next == '\r' || *next == '\n') {
+        next++;
+    }
+    s_cmd_len -= (int)(next - s_cmd_buf);
+    memmove(s_cmd_buf, next, s_cmd_len);
+    s_cmd_buf[s_cmd_len] = '\0';
+
+    return true;
+}
 
 /* 在缓冲区里找一条命令并执行。
    返回 true 表示找到并处理了一条（调用方要接着再试，可能还有第二条）。 */
@@ -175,17 +310,50 @@ static bool cmd_try_one(void)
         }
     }
 
+    /* 把带参数的 "wifi " 也拉进来一起比位置。
+
+       ⚠ 这里有个规矩容易忽略：如果 "wifi " 靠前、但【整行还没到齐】，
+         cmd_do_wifi() 会返回 false，我们就必须原样返回 false 继续等，
+         而【不能】退回去执行表里那条 —— 那等于把后面的命令提前执行了。
+
+       "wifi " 末尾那个空格是有意的：它保证匹配到的是命令头，
+       而不是某个 SSID 里恰好出现的 "wifi"。 */
+    {
+        char *w = strstr(s_cmd_buf, KEY_WIFI);
+        if (w != NULL && (hit == NULL || w < hit)) {
+            return cmd_do_wifi(w);
+        }
+    }
+
     if (found == NULL) {
         return false;      /* 还没拼出完整的命令，继续等 */
     }
 
-    if (found->turn_on) {
+    switch (found->action) {
+    case ACT_ON:
         relay_on();
         /* 回复用纯 ASCII：无论调试助手设成 UTF-8 还是 GBK，都不会显示成乱码 */
         tcp_client_send("LED ON  (GPIO0 = HIGH)\r\n", 0);
-    } else {
+        break;
+
+    case ACT_OFF:
         relay_off();
         tcp_client_send("LED OFF (GPIO0 = LOW)\r\n", 0);
+        break;
+
+    case ACT_CONFIG:
+        /* 手动进配网。
+
+           平时用不着 —— wifi_sta.c 里那条管理任务会在"连不上 60 秒"时
+           自动进去。这条命令是给"我知道热点马上要改，想提前配"用的。
+
+           ⚠ 这里【不能】等它跑完：
+           配网要听 90 秒，本回调跑在 tcp_client 的任务上，
+           一阻塞整条 TCP 连接就收不了也发不出，看起来像死机。
+           wifi_sta_start_smartconfig() 内部会自己起一条临时任务。 */
+        tcp_client_send("CONFIG MODE (see serial log)\r\n", 0);
+        wifi_sta_start_smartconfig();
+        break;
     }
 
     /* 把这条命令从缓冲区里抠掉：
@@ -277,9 +445,13 @@ void app_main(void)
     tcp_client_start();
 
     /* 5. 主任务保持存活。
-          真正的活儿都在上面那两个任务里异步跑着，这里什么都不用做。
-          绝不能让程序返回或调用 esp_restart()：一旦复位，GPIO0 会被重新
-          采样成启动模式选择脚，此时若正好处在低电平相位，芯片就会进下载模式。 */
+          真正的活儿都在上面那几条任务里异步跑着，这里什么都不用做。
+
+          ⚠ 这里本身【不要】返回、也不要主动重启：
+            一旦复位，GPIO0 会被重新采样成启动模式选择脚，
+            此时若正好处在低电平，芯片就会进下载模式。
+            本工程现在没有任何地方会重启，所以这条约束是"别引入"而不是"要处理"——
+            将来真要加重启，记得先 gpio_set_level(RELAY_GPIO, RELAY_ON)。 */
     while (1) {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
