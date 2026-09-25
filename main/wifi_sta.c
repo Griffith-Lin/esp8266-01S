@@ -1,11 +1,31 @@
 /* WiFi STA（客户端）连接模块 —— 实现见 wifi_sta.h
 
-   这个文件管三件事：
+   这个文件管两件事：
 
      ① 把热点名/密码存进 NVS，开机先读它（而不是焊死在代码里）
      ② 收到 TCP 命令就换热点，立刻重连
-     ③ 连不上超过 60 秒，自动进 SmartConfig 配网 ——
-        手机广播一下，节点就能拿到新密码，不用拆板子插串口线 */
+
+   ⚠ 这里【没有配网兜底】了。
+
+   以前连不上会自己进 SmartConfig，让手机 App 把凭据编成一串广播包发出来。
+   那条路已经整个拆掉，来龙去脉记在 README §9.7。一句话版本：
+
+     SmartConfig 的整条链路是「手机 WiFi 驱动的广播行为 → 路由器 →
+     ESP 的混杂模式」，任何一环不配合就死，而且【没有反馈】——
+     串口上什么都看不出来，手机上只会说"配网失败"，根本没法查。
+     我们实测过：60 秒里收到 17090 帧，其中组播/广播数据帧是 0。
+     那是不可能的（ARP/DHCP/mDNS/IPv6 邻居发现全是组播），
+     说明连"手机到底发没发"这个前提都无法判定。
+
+   代价说清楚：如果主节点的 SSID/密码改了，而你没先告诉这个节点，
+   它就再也回不来，只能拆下来重烧。所以改主节点凭据的顺序必须是：
+
+       ① 先发 TCP 命令  wifi <新SSID>,<新密码>    （节点还连得上时）
+       ② 再改主节点
+
+   反过来做就得重烧固件。
+
+   将来从节点和主节点之间走哪条链路，另定 —— 见 README §9.7 末尾。 */
 
 #include <stdio.h>
 #include <string.h>
@@ -16,7 +36,6 @@
 
 #include "esp_event.h"
 #include "esp_wifi.h"
-#include "esp_smartconfig.h"
 #include "tcpip_adapter.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -32,14 +51,28 @@
    之后不管用什么方式改过密码，都以 NVS 为准，这几行就不再生效了。
 
    所以改热点最省事的办法不是改这里重烧固件，而是：
-     · 节点还连得上  → 发一条 TCP 命令 wifi <SSID>,<密码>
-     · 节点已经连不上 → 等 60 秒，它会自己进配网，用手机 App 广播
+     · 节点还连得上   → 发一条 TCP 命令 wifi <SSID>,<密码>
+     · 节点已经连不上 → 只能改这里重烧（没有别的路了，见文件头）
 
    ⚠ SSID 区分大小写，而且【空格也算一个字符】—— 写错不会报错，
      只会一直连不上（串口上会看到 reason=201）。
    ⚠ ESP8266 只支持 2.4GHz。热点开在 5GHz 上芯片根本扫不到，
-     表现和"SSID 写错"一模一样。 */
-#define WIFI_SSID_DEFAULT       "DESKTOP-HTLNPUV 4127"
+     表现和"SSID 写错"一模一样。
+
+   ── 这两个值必须和 ESP32 主节点上那个 SoftAP 【逐字一致】 ──
+
+   链路方案（已定）：主节点 ESP32 开 SoftAP，从节点就是本模块，
+   连上去之后走 TCP 连 ESP32 上的服务器。路由器不参与。
+
+   所以这里的 SSID / 密码，要和 ESP32 那边
+   esp_wifi_set_config(ESP_IF_WIFI_AP, ...) 里的 ap.ssid / ap.password
+   一模一样。两边是【各自独立编译】的，编译器不会帮你核对。
+
+   ⚠ 密码不能少于 8 字节 —— WPA2 的下限，短了 ESP32 那边拒绝开 AP。
+   ⚠ ESP32 的 ap.authmode 必须选 WPA2_PSK。本文件里
+     threshold.authmode 设的就是 WPA2_PSK（见 apply_credentials()），
+     主节点开成【开放式】热点反而连不上。 */
+#define WIFI_SSID_DEFAULT       "ESP32-S3-host"
 #define WIFI_PASSWORD_DEFAULT   "88888888"
 
 /* ======================= NVS =======================
@@ -61,15 +94,16 @@
 #define SSID_MAX_LEN    32
 #define PASS_MAX_LEN    64
 
-/* ======================= 配网参数 ======================= */
+/* ======================= 重连参数 =======================
 
-/* 开机后多久还没拿到 IP，就认为"凭据不对/热点不在"，进配网。
-   60 秒是个折中：给足正常重连的时间，又不至于让人等太久。 */
-#define SMARTCONFIG_AFTER_MS   60000
+   没连上时，每隔多久在串口上吭一声。
 
-/* 一次配网听多久。听不到就退出来，恢复正常的自动重连 ——
-   不能一直卡在配网里，否则热点恢复了这个节点也回不来。 */
-#define SMARTCONFIG_LISTEN_MS  90000
+   重连本身【不靠这个值】—— wifi_event_handler 收到"断开"事件就直接
+   esp_wifi_connect() 了，不需要定时器。这个值只控制报平安的频率：
+   不然连不上时日志会一片安静，看起来像死机。
+
+   30 秒 = Wi-Fi 扫一遍全部 13 个信道再加认证超时，大概就是这个量级。 */
+#define WIFI_DOWN_REPORT_MS   30000
 
 /* ======================= 模块内部状态 ======================= */
 
@@ -77,11 +111,9 @@ static EventGroupHandle_t s_wifi_event_group;
 
 /* 事件位：
      GOT_IP  —— 拿到 IP 了（真的能通信了）
-     DOWN    —— 掉线过一次（用来把管理任务从"已连上"的睡眠里叫醒）
-     SC_GOT  —— SmartConfig 收到了手机广播的凭据 */
+     DOWN    —— 掉线过一次（用来把管理任务从"已连上"的睡眠里叫醒） */
 #define WIFI_GOT_IP_BIT   BIT0
 #define WIFI_DOWN_BIT     BIT1
-#define WIFI_SC_GOT_BIT   BIT2
 
 /* 当前生效的凭据。放在这里而不是每次去读 NVS，
    是因为事件回调里要打印它，而 NVS 读操作不该在回调里频繁做。
@@ -90,14 +122,8 @@ static EventGroupHandle_t s_wifi_event_group;
 static char s_ssid[SSID_MAX_LEN + 1];
 static char s_pass[PASS_MAX_LEN + 1];
 
-/* SmartConfig 期间必须【暂停自动重连】。
-
-   因为 wifi_event_handler 里一掉线就 esp_wifi_connect()，
-   而配网需要网卡老老实实地去嗅探空中的广播包 ——
-   一边疯狂重连一边嗅探，是收不到的。 */
-static volatile bool s_smartconfig_on = false;
-
-/* 重试计数，只为了在串口上区分"第几次失败"，方便看出是不是在原地打转 */
+/* 重试计数。除了在串口上区分"第几次失败"，管理任务还会把它打出来 ——
+   数字一直涨就是真的在原地打转，该去查 SSID / 密码 / 频段了。 */
 static int s_retry = 0;
 
 /* ======================= 小工具 ======================= */
@@ -121,7 +147,7 @@ static void copy_str(char *dst, size_t dst_size, const char *src)
 /* ======================= NVS 读写 ======================= */
 
 /* 从 NVS 读凭据。读到返回 true，没读到（或读到的 SSID 是空串）返回 false。 */
-static bool nvs_load_credentials(void)
+static bonvs_load_credentials(void)
 {
     nvs_handle_t h;
     size_t       len;
@@ -203,7 +229,10 @@ static void apply_credentials(void)
        设成 WPA2_PSK 就是"比 WPA2 弱的（WEP、WPA-TKIP）我都不连"。
        Windows 热点默认是 WPA2-Personal，对得上。
        万一你的热点是 WPA/WPA2 混合模式或者 WPA3，连不上时把这一行
-       去掉再试 —— 不设的话等于接受任何加密方式。 */
+       去掉再试 —— 不设的话等于接受任何加密方式。
+
+       ⚠ 这条对主节点自建 SoftAP 的场景同样适用：ESP32 的 SoftAP 默认
+         加密方式也要选 WPA2-PSK，否则这里会把它挡在外面。 */
     cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     esp_wifi_set_config(ESP_IF_WIFI_STA, &cfg);
@@ -238,11 +267,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         xEventGroupClearBits(s_wifi_event_group, WIFI_GOT_IP_BIT);
         xEventGroupSetBits(s_wifi_event_group, WIFI_DOWN_BIT);
 
-        /* 配网期间不重连 —— 原因见 s_smartconfig_on 的注释 */
-        if (s_smartconfig_on) {
-            return;
-        }
-
         printf("[wifi] 第 %d 次失败，reason=%d\n", ++s_retry, d->reason);
 
         /* 直接重连、不在这里 sleep：esp_wifi_connect() 内部要先扫一遍信道、
@@ -270,114 +294,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-/* SmartConfig 事件的回调。也跑在默认事件循环任务上。
-
-   SmartConfig 干的事：手机 App 把 SSID 和密码编码成一串特制的
-   802.11 广播包，连着发出去。ESP 这边把网卡切到"只听不发"的嗅探状态，
-   从空口把这些包收齐、解出来。
-
-   ⚠ 关键点：整个过程【不需要 ESP 认识任何路由器】。
-     这正是它能救"密码改了、节点已经连不上"的原因 ——
-     那种情况网络已经断了，任何走网络的方案（包括 OTA）都够不着它。 */
-static void smartconfig_event_handler(void *arg, esp_event_base_t event_base,
-                                      int32_t event_id, void *event_data)
-{
-    if (event_base != SC_EVENT) {
-        return;
-    }
-
-    switch (event_id) {
-    case SC_EVENT_SCAN_DONE:
-        printf("[wifi] 配网：扫描完成，开始找目标信道\n");
-        break;
-
-    case SC_EVENT_FOUND_CHANNEL:
-        printf("[wifi] 配网：找到信道，等待手机广播凭据\n");
-        break;
-
-    case SC_EVENT_GOT_SSID_PSWD: {
-        smartconfig_event_got_ssid_pswd_t *e =
-            (smartconfig_event_got_ssid_pswd_t *)event_data;
-
-        printf("[wifi] 配网：收到凭据\n");
-        printf("[wifi]   SSID   : %s\n", (char *)e->ssid);
-        /* 密码不打印 —— 串口日志可能被人看到 */
-        printf("[wifi]   密码   : (%d 字节，不打印)\n", (int)strlen((char *)e->password));
-
-        /* 先落盘。掉电就白配了，所以这一步必须在切换连接之前。 */
-        if (nvs_save_credentials((char *)e->ssid, (char *)e->password)) {
-            copy_str(s_ssid, sizeof(s_ssid), (char *)e->ssid);
-            copy_str(s_pass, sizeof(s_pass), (char *)e->password);
-            printf("[wifi] ✓ 凭据已存入 NVS，掉电不丢\n");
-        }
-
-        /* 只举手，不在这里动连接 —— 由管理任务统一收尾。
-           在事件回调里做重连会把事件循环卡住。 */
-        xEventGroupSetBits(s_wifi_event_group, WIFI_SC_GOT_BIT);
-        break;
-    }
-
-    default:
-        break;
-    }
-}
-
-/* ======================= 配网流程 ======================= */
-
-/* 进一次配网：启动、听 90 秒、不管结果如何都退出并恢复重连。
-
-   ⚠ 为什么"不管结果如何都要退出"？
-     如果一直卡在配网状态，那热点恢复了、或者只是当时信号不好，
-     这个节点就永远回不来了 —— 而它本来只需要当个灯开关。 */
-static void enter_smartconfig(void)
-{
-    smartconfig_start_config_t sc_cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
-
-    printf("\n[wifi] 60 秒没连上 \"%s\"，进入配网模式\n", s_ssid);
-    printf("[wifi] 手机上：连上【要连的那个热点】，打开 ESP-TOUCH App，\n");
-    printf("[wifi]           输入该热点密码，点确认。\n");
-    printf("[wifi] 听 %d 秒，听不到就回去继续自动重连。\n\n",
-           SMARTCONFIG_LISTEN_MS / 1000);
-
-    s_smartconfig_on = true;
-    esp_wifi_disconnect();          /* 断开时的回调会看到标志位，不会重连 */
-
-    xEventGroupClearBits(s_wifi_event_group, WIFI_SC_GOT_BIT);
-
-    if (esp_smartconfig_start(&sc_cfg) != ESP_OK) {
-        printf("[wifi] ✗ SmartConfig 启动失败\n");
-        s_smartconfig_on = false;
-        esp_wifi_connect();
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        return;
-    }
-
-    /* 等到三件事之一：收到凭据 / 已经连上 / 超时 */
-    xEventGroupWaitBits(s_wifi_event_group,
-                        WIFI_SC_GOT_BIT | WIFI_GOT_IP_BIT,
-                        pdFALSE,   /* 不清除 */
-                        pdFALSE,   /* 任意一个到了就行 */
-                        pdMS_TO_TICKS(SMARTCONFIG_LISTEN_MS));
-
-    /* ⚠ 无论成功失败都必须调 stop —— 它会释放 start 时占的内存。
-       漏掉就是每次配网漏一块，几次之后 ESP8266 那点内存就没了。 */
-    esp_smartconfig_stop();
-    s_smartconfig_on = false;
-
-    /* 用（可能刚刚更新的）凭据重新连一次 */
-    apply_credentials();
-    s_retry = 0;
-    esp_wifi_connect();
-    vTaskDelay(pdMS_TO_TICKS(3000));
-}
-
 /* ======================= 管理任务 =======================
 
-   这条任务只干一件事：盯着"到底连上没有"，决定要不要进配网。
+   这条任务只干一件事：没连上的时候，每隔 WIFI_DOWN_REPORT_MS 在串口上
+   吭一声。
 
-   为什么不把这些逻辑塞进事件回调？
-   因为回调跑在系统的事件循环任务上，那里不能阻塞 ——
-   一阻塞，整个 WiFi 状态机就停摆了。而"等 60 秒"这件事本质上是阻塞的。 */
+   为什么要单独一条任务？因为"等一段时间"本质上是阻塞的，
+   而 wifi_event_handler 跑在系统的事件循环任务上 —— 在那里阻塞，
+   整个 WiFi 状态机就停摆了。
+
+   ⚠ 重连本身【不在这里】：wifi_event_handler 收到"断开"事件就直接
+     esp_wifi_connect() 了。所以这条任务挂掉不影响重连，只会让日志变哑。
+
+   （以前它还负责"连不上超过一段时间就进 SmartConfig"，
+     那条路整个拆掉了，见文件头。） */
 static void wifi_mgr_task(void *arg)
 {
     (void)arg;
@@ -393,18 +323,19 @@ static void wifi_mgr_task(void *arg)
             continue;   /* 掉线了，回到循环开头重新判断 */
         }
 
-        /* 没连上 —— 给 60 秒正常重连的机会。
-           注意这里 pdFALSE：不能清除 GOT_IP 位，
+        /* 没连上 —— 等一段。注意这里 pdFALSE：不能清除 GOT_IP 位，
            否则 wifi_sta_wait_ip() 那边永远等不到。 */
         if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
                                 pdFALSE, pdTRUE,
-                                pdMS_TO_TICKS(SMARTCONFIG_AFTER_MS))
+                                pdMS_TO_TICKS(WIFI_DOWN_REPORT_MS))
             & WIFI_GOT_IP_BIT) {
             continue;   /* 连上了 */
         }
 
-        /* 60 秒还没连上 —— 进配网 */
-        enter_smartconfig();
+        /* 还是没连上。打一行就走，下一轮接着等 —— 重连是回调那边做的。 */
+        printf("[wifi] 还没连上 \"%s\"：已失败 %d 次，仍在重试\n", s_ssid, s_retry);
+        printf("[wifi]   查这三样：SSID 拼写（空格和大小写都算）、密码、\n");
+        printf("[wifi]   热点是不是只在 5GHz 上（ESP8266 只认 2.4GHz）\n");
     }
 }
 
@@ -452,23 +383,40 @@ void wifi_sta_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    /* 显式关掉省电模式。
+
+       ⚠ 先说清楚：【在本 SDK 上这一句是冗余的】，它不是任何问题的修复。
+         esp_wifi.h:413 的原文：
+
+             @attention Default power save type is WIFI_PS_NONE.
+
+         默认本来就是不省电。（当年这一句是从官方 examples/wifi/smart_config
+         抄过来的，那个例子已经和本项目无关了 —— 见 README §9.7。）
+
+         留着它是为了"把前提写死"，而且这个前提在将来会真的有用：
+         SDK 自带的 ESP-NOW 示例（examples/wifi/espnow/README.md）里
+         明确写了一句 ——
+
+             如果接收方是 station 模式且连着一个 AP，
+             必须关掉 modem sleep。
+
+         也就是说，哪天从节点改用 ESP-NOW 走点对点，省电模式开着
+         就会收不到包。现在写死，等于提前把那个坑守住。 */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     /* 注册回调。IP 那一侧只关心"拿到 IP"这一个事件，其它不用管。 */
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                &wifi_event_handler, NULL));
-    /* SmartConfig 的事件基是 SC_EVENT，跟上面两个不是一套，要单独注册。 */
-    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID,
-                                               &smartconfig_event_handler, NULL));
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     apply_credentials();
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    /* 起管理任务。栈 4KB：它只做 printf 和等事件，
-       真正干活的 SmartConfig 跑在 SDK 自己的任务里。 */
+    /* 起管理任务。栈 4KB：它只做 printf 和等事件，不干重活。 */
     if (xTaskCreate(wifi_mgr_task, "wifi_mgr", 4096, NULL, 4, NULL) != pdPASS) {
-        printf("[wifi] ✗ 管理任务创建失败，配网兜底将不可用\n");
+        printf("[wifi] ✗ 管理任务创建失败（只影响「还没连上」那几行提示）\n");
     }
 
     /* esp_wifi_start() 是异步的：它返回时还没连上，连接结果由事件循环
@@ -541,36 +489,4 @@ bool wifi_sta_set_credentials(const char *ssid, const char *password)
 const char *wifi_sta_get_ssid(void)
 {
     return s_ssid;
-}
-
-/* 手动配网用的临时任务外壳。
-
-   ⚠ 为什么不直接把 enter_smartconfig 交给 xTaskCreate？
-     FreeRTOS 的任务函数签名是 void (*)(void *)，而 enter_smartconfig 是
-     void (*)(void)。用强制类型转换硬塞进去、再让它被带参数调用，
-     在 C 标准里是【未定义行为】—— 今天能跑只是因为 Xtensa 恰好把
-     多余的寄存器参数忽略了，换个编译器/架构就可能崩。
-     包一层的代价只有三行，没必要赌。 */
-static void sc_task(void *arg)
-{
-    (void)arg;
-    enter_smartconfig();
-    vTaskDelete(NULL);      /* 活儿干完了，自己把自己删掉 */
-}
-
-void wifi_sta_start_smartconfig(void)
-{
-    if (s_smartconfig_on) {
-        printf("[wifi] 配网已经在跑了\n");
-        return;
-    }
-
-    /* 起一条临时任务去跑配网，而不是在这里直接调 enter_smartconfig()。
-
-       ⚠ 因为 enter_smartconfig() 会阻塞 90 秒。这个函数是从
-         tcp_client 的接收回调里调的，那条任务一卡，
-         整条 TCP 连接就收不了也发不出，看起来像死机。 */
-    if (xTaskCreate(sc_task, "sc_once", 4096, NULL, 4, NULL) != pdPASS) {
-        printf("[wifi] ✗ 内存不够，起不了配网任务\n");
-    }
 }
