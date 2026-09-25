@@ -1,6 +1,19 @@
 #The partition table must strictly adhere to two principles:
 #1. It must be entirely in English. 2. The annotations should be on a separate line.
 
+# =====================================================================
+# DO NOT USE THIS FILE. It is kept only as a record of a mistake.
+#
+# This board has 1MB of flash, not 2MB. This table was active when that
+# was still believed to be true, and the ota_1 entry at 0x108000 points
+# past the end of a 1MB chip. Addresses on 1MB silicon alias
+# (0x108000 & 0xFFFFF = 0x008000), so an OTA erase wrapped around and
+# wiped the partition table, nvs, otadata, phy_init and 95% of the
+# running app. The board had to be reflashed over serial.
+#
+# The live table is partitions_1mb.csv. See README.md section 8.
+# =====================================================================
+
 # Name,   Type, SubType, Offset,   Size, Flags
 #
 # Custom 2MB layout for ESP-01S (2MB flash variant).
