@@ -5,10 +5,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repository is
 
 A Chinese-language **development notebook** for the ESP-01S (ESP8266) module. `README.md` is the
-deliverable: a step-by-step guide covering toolchain setup, environment variables, build/flash, baud
-rates, and boot-log analysis. The C code in `main/` is the stock `hello_world` example copied from
-`$IDF_PATH/examples/get-started/` — it exists only to give the notes something to build. Do not treat
-this as a software project with features to add.
+main deliverable: a step-by-step guide covering toolchain setup, environment variables, build/flash,
+baud rates, boot-log analysis, partition tables, and TCP/WiFi provisioning.
+
+The code in `main/` **is a real application, not a stock example.** It began as the `hello_world`
+example from `$IDF_PATH/examples/get-started/`, but has since grown into a remotely controlled
+relay — `main.c` (relay driver + command parsing), `wifi_sta.c` (credentials in NVS, reconnect,
+SmartConfig fallback), `tcp_client.c` (transport only; it knows nothing about lights). The notes
+exist to explain that code, so keep prose and code in step when either changes.
+
+An OTA module (`ota.c`/`ota.h`) used to live in `main/`. It was **moved out** to
+`../ota-for-larger-flash/` (a sibling of this repo under `project/`) because it cannot run on a
+1MB board — two slots don't fit. Do not move it back or re-add `ACT_OTA` without a larger module
+and a two-slot partition table. Its directory has its own README with the return procedure.
 
 `README.md` is written in Chinese in an explanatory teaching style — tables, blockquotes,
 "为什么" asides, tree diagrams, word-split mnemonic breakdowns. Match that voice when editing.
@@ -35,7 +44,7 @@ Constraints responsible for most build failures:
 - **Python must be the 32-bit install** (`Python313-32`), not the 64-bit one.
 - **`setuptools` must stay pinned `<71`.** v71+ removed `pkg_resources`, which the SDK Makefiles
   import; installing the latest silently breaks the build.
-- **`partitions_2mb.csv` must stay pure ASCII.** `gen_esp32part.py` decodes it as ASCII and aborts on
+- **`partitions_1mb.csv` must stay pure ASCII.** `gen_esp32part.py` decodes it as ASCII and aborts on
   any non-ASCII byte — *including inside comments*, which are decoded before the `#` check. A trailing
   comment after the last comma is also fatal: that column is the `flags` field, and anything other than
   `encrypted` raises `unknown flag`. Keep notes on their own `#` lines, in ASCII. Because this file is
@@ -64,7 +73,15 @@ Hardware state matters more than the software:
 - **Monitor baud is 74880**, not 115200 — that is the ESP8266 ROM bootloader's fixed output rate, and
   anything else turns the `ets Jan 8 2013,...` boot header into garbage. Flash baud (921600) is a
   separate setting.
-- This module is the **2MB** flash variant; the partition table in `sdkconfig` assumes that.
+- This module is the **1MB** flash variant. Verify with `esptool.py --port COM8 flash_id` — never with
+  the boot log. `CONFIG_SPI_FLASH_SIZE` is **never probed from the chip**; it is copied into
+  `g_rom_flashchip.chip_size` (spi_flash.c:67-74) and echoed back by both `spi_flash_get_chip_size()`
+  (spi_flash.c:790) *and* the `SPI Flash Size :` boot line (bootloader_init.c:281, read from the image
+  header esptool wrote at flash time). `spi_flash_erase_sector()`'s bounds check (spi_flash.c:465)
+  compares that same config value against itself, so **a wrong size does not fail — it aliases**:
+  1MB silicon decodes only A0–A19, so `0x108000 & 0xFFFFF = 0x008000`, and an erase past the end
+  silently wraps to the start and destroys the partition table, nvs, and the running app. This has
+  already bricked this board once.
 
 ## Two frontends, one SDK
 
@@ -75,8 +92,9 @@ the CMake flow. Both consume the same SDK:
 - `Makefile` → `$(IDF_PATH)/make/project.mk`
 - `CMakeLists.txt` → `$ENV{IDF_PATH}/tools/cmake/project.cmake`
 
-Keep both entry points working when adding source files — a new `.c` must be registered in **both**
-`main/component.mk` and `main/CMakeLists.txt`.
+Keep both entry points working when adding source files. Only `main/CMakeLists.txt` needs the new
+file added to `SRCS` — `main/component.mk` is the SDK's default stub, which compiles every `.c` in
+the directory automatically and so needs no edit.
 
 ## VSCode extension caveats
 
