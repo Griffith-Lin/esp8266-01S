@@ -6,3 +6,7 @@
 /build
 /.vscode
 /sdkconfig.old
+
+#doxygen 生成的文档（Doxyfile 本身要提交，生成物不要）
+/html
+/latex
