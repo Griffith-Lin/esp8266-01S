@@ -10,9 +10,12 @@ baud rates, boot-log analysis, partition tables, and TCP/WiFi control.
 
 The code in `main/` **is a real application, not a stock example.** It began as the `hello_world`
 example from `$IDF_PATH/examples/get-started/`, but has since grown into a remotely controlled
-relay — `main.c` (relay driver + command parsing), `wifi_sta.c` (credentials in NVS, reconnect),
-`tcp_client.c` (transport only; it knows nothing about lights). The notes exist to explain that code,
-so keep prose and code in step when either changes.
+relay, split by responsibility: `main.c` (glue and startup only — no business logic), `relay.c`
+(GPIO0 high/low), `cmd.c` (buffer, keyword table, dispatch), `link.c` (which transport is live;
+the single exit for every reply), `wifi_sta.c` (credentials in NVS, reconnect), `tcp_client.c` /
+`udp_client.c` (transport only; they know nothing about lights). The notes exist to explain that
+code, so keep prose and code in step when either changes. README §9.1 is the short version of that
+module map.
 
 The slave's **master is an ESP32**, and the link was chosen deliberately (README §9.2, decided
 2026-09-25): the ESP32 runs a **SoftAP**, the slave is a **TCP client** to it, and no router is
@@ -126,7 +129,7 @@ the directory automatically and so needs no edit.
 
 ## Doxygen comments
 
-All three sources in `main/` are commented in Doxygen style, matching the SDK's own house style
+Every source in `main/` is commented in Doxygen style, matching the SDK's own house style
 (`/**` with a two-space `*` indent, `@brief` / `@param[in]` / `@retval` / `@note` / `@warning` — see
 any function in `components/esp8266/include/esp_wifi.h`). Keep new comments in that style; a
 half-converted file is worse than an unconverted one.
