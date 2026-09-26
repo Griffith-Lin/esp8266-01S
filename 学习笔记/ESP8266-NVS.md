@@ -136,7 +136,7 @@ if (key != nullptr && strncmp(key, item.key, Item::MAX_KEY_LENGTH) != 0) { ... }
 
 ### 谁在管这块分区
 
-`nvs_flash_init()`。它在 `wifi_sta_init()` 里被调用（`main/wifi_sta.c:430-436`），
+`nvs_flash_init()`。它在 `wifi_sta_init()` 里被调用（`main/wifi_sta.c:412-418`），
 而且**必须在 `esp_wifi_init()` 之前** —— WiFi 驱动要把校准数据写进 NVS，
 NVS 没挂上，驱动直接启动失败。
 
@@ -208,7 +208,7 @@ nvs_close(h);
 
 ### 3.3 ⚠️ `nvs_commit()` 在这个 SDK 上是空操作
 
-**项目里现在的注释是这么写的**（`main/wifi_sta.c:241-243`）：
+**这一节从一条写错的注释开始。** 项目里原先的注释是这么写的：
 
 ```c
 /* ⚠ 前面两个 set 只是写进内存缓存，这一句才真正落到 flash。
@@ -250,6 +250,15 @@ nvs_commit()                           nvs_api.cpp:387-397
    习惯要在没有代价的时候就养对。
 2. **删掉它，将来没人知道这里曾经需要它。** 留着一句空操作，配合一句
    说清"为什么留着"的注释，比删掉更安全。
+
+按这两条改完之后，代码里现在的样子是（`main/wifi_sta.c:237-240`）：
+
+```c
+/* 这一句在本 SDK（v3.4）上是空操作 —— set 已经当场落盘了。
+   留着是因为 ESP-IDF v4+ 的 NVS 真的加了缓存，到那边漏掉它就是
+   "掉电丢失，而且当场看不出任何异常"。 */
+err = nvs_commit(h);
+```
 
 > ★ 这件事本身就是一条经验：**"这个函数是干什么的"不能靠名字猜，也不能靠
 > 上一版 SDK 的记忆。** ESP8266_RTOS_SDK 冻在 v3.4，但 ESP-IDF 还在动，
@@ -339,7 +348,7 @@ sHandle->createOrOpenNamespace(ns_name, open_mode == NVS_READWRITE, nsIndex);
 
 ### 理由三：它能和"出厂默认值"叠成三层
 
-这是本项目实际用的结构（`main/wifi_sta.c:44-48` 的注释）：
+这是本项目实际用的结构（`main/wifi_sta.h:25-32` 的注释）：
 
 | 优先级 | 来源 | 什么时候生效 |
 | --- | --- | --- |
@@ -440,7 +449,7 @@ esptool.py --port COM8 --baud 115200 erase_region 0x9000 0x6000
 
 ### 5.3 程序内擦
 
-代码里那条路径（`main/wifi_sta.c:430-436`）：
+代码里那条路径（`main/wifi_sta.c:412-418`）：
 
 ```c
 if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -460,7 +469,7 @@ if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
 记得 §2 那张表：24KB 里住着两家人。
 
 所以擦完之后，**WiFi 驱动的校准数据也没了**。这不是问题 —— 下次
-`esp_wifi_init()` 时驱动会自己重新校准并重写一遍（`main/wifi_sta.c:422-429` 记了这件事）。
+`esp_wifi_init()` 时驱动会自己重新校准并重写一遍（`main/wifi_sta.c:404-411` 记了这件事）。
 
 代价只是"第一次上电慢一点"，不是"坏了"。但如果你不知道这件事，
 看到擦完之后启动变慢会以为搞砸了。
