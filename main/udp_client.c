@@ -2,15 +2,14 @@
   * @file    udp_client.c
   * @brief   UDP 传输模块 —— 不建连接，直接往主节点丢数据报
   *
-  * @note    和 tcp_client.c 一样是【纯传输层】：只负责把字节搬过去、搬回来，
-  *          完全不知道"开灯"是什么。业务在 main.c 里，通过
-  *          udp_client_set_rx_handler() 注册的回调接进去。
-  *
-  * @note    接口说明（含和 TCP 的差别）见 udp_client.h。
+  * 对外接口和回调契约见 udp_client.h。
   *
   * @warning 这个模块和 tcp_client 是【二选一】的，同一时刻只该有一个在收。
   *          两个一起开的话，同一条命令会从两条路各到一次 —— "开灯"会被
   *          执行两次，"关灯"也是。切换逻辑在 main.c 的 link_switch()。
+  *
+  * @see     学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §3（UDP 的 API）、
+  *          §5.3（任务为什么永不退出）、§5.4（stop 为什么只置标志）
   */
 
 #include <stdio.h>
@@ -29,19 +28,14 @@
 #include "udp_client.h"
 
 /**
-  * @brief 主节点（UDP 对端）的地址
+  * @brief 主节点地址（当前生效的是台面调试：电脑开移动热点）
   *
-  * @note  和 tcp_client.c 里的 TCP_SERVER_IP 是【同一个地址、同一套开关】：
-  *        两套值，用哪套就放开哪套，而且必须和 wifi_sta.c 顶部的 SSID / 密码
-  *        一起切。完整理由（为什么这两个地址都能硬编码、只切一半会看到什么）
-  *        写在 tcp_client.c 那段注释里，这里不重复。
-  *
-  * @warning 改 TCP_SERVER_IP 的时候别忘了这里 —— 这两个 define 在
-  *          【不同文件里各存了一份】，编译器不会帮你核对。
+  * @warning 它和 tcp_client.c 顶部的 TCP_SERVER_IP 是【两份独立的拷贝】，
+  *          编译器不会帮你核对。改一个就必须改另一个。
   *          漏改的表现：net tcp 已经通了，一敲 net udp 又开始刷 errno=113。
+  *
+  * @note    正式部署时换成下面注释掉的那行（ESP32 主节点开 SoftAP）。
   */
-
-/* 台面调试：电脑开移动热点（当前生效） */
 #define UDP_SERVER_IP   "192.168.137.1"
 
 /* 正式：ESP32 主节点开 SoftAP */
@@ -50,15 +44,13 @@
 /**
   * @brief 端口号
   *
-  * @note  本端 bind 的端口和目的端口用的是【同一个值】，8087。
-  *        这样定是为了让主节点的回包规则简单到没有歧义：收到包的源地址是
-  *        从节点IP:8087，回包就发给这个地址，不需要额外协商，也不需要
-  *        维护一张"谁在哪"的表。
+  * @note  本端 bind 的端口和目的端口用的是【同一个值】。这样定是为了让主节点的
+  *        回包规则简单到没有歧义：收到包的源地址是从节点IP:8087，回包就发给
+  *        这个地址，不需要额外协商，也不需要维护一张"谁在哪"的表。
   *
-  * @warning 必须和 ESP32 那边一致，而且【不】要设成 8086 ——
-  *          8086 是 TCP 那边的端口。UDP 端口和 TCP 端口是两套互不干扰的
-  *          编号空间，理论上重号也没事，但重号之后看日志、抓包、配防火墙
-  *          都得先在脑子里换算一次是哪个协议，没必要给自己挖这个坑。
+  * @warning 必须和主节点那边一致，而且【不】要设成 8086 —— 那是 TCP 那边的端口。
+  *          两个协议本来各有各的编号空间，重号也不会出错，但重号之后看日志、
+  *          抓包、配防火墙都得先在脑子里换算一次是哪个协议，没必要。
   */
 #define UDP_PORT        8087
 
@@ -71,12 +63,12 @@
   * @note  这个超时在这里是【双重身份】：
   *          ① 让任务有机会看到 s_running 被置成 false，否则会永远阻塞；
   *          ② 顺便充当下面那个"重新报到"的定时心跳。
-  *        所以它不再是纯粹的超时保护，改成别的值之前先想清楚这两件事。
+  *        所以改成别的值之前先想清楚这两件事。
   */
 #define UDP_RECV_TIMEOUT_S  5
 
 /**
-  * @brief 每隔这么久，主动往主节点再报一次到（毫秒）
+  * @brief    每隔这么久，主动往主节点再报一次到（毫秒）
   *
   * @warning 这条心跳【不是】冗余设计，是 UDP 模式下必须有的东西。
   *
@@ -111,10 +103,6 @@ static udp_rx_handler_t s_rx_handler = NULL;
   *
   * @note     main.c 切链路时把它置成 false，任务在下一轮发现后自行关闭
   *           socket —— 关 socket 的动作【只由任务自己做】，别的任务不碰。
-  *
-  * @warning  为什么不让 stop() 直接替任务关？见 udp_client.h 里的说明：
-  *           调用 stop() 的那个函数正跑在传输任务自己的栈上，去等任务
-  *           退出就是等自己。
   */
 static volatile bool s_running = false;
 
@@ -126,37 +114,14 @@ static volatile bool s_running = false;
   */
 static bool s_task_started = false;
 
-/**
-  * @brief 注册"收到数据"的回调
-  *
-  * @param[in] handler  上层提供的处理函数；传 NULL 表示不处理
-  *
-  * @note  必须在 udp_client_start() 【之前】调用。
-  */
+/* ======================= 对外接口 ======================= */
+/* 接口契约都在 udp_client.h 里，这里只记实现上不能动的地方。 */
+
 void udp_client_set_rx_handler(udp_rx_handler_t handler)
 {
     s_rx_handler = handler;
 }
 
-/**
-  * @brief    往主节点发一个数据报
-  *
-  * @param[in] data  要发的数据
-  * @param[in] len   字节数；传 0 表示"data 是 C 字符串，自己算长度"
-  *
-  * @return   实际发出的字节数；失败或被丢弃返回 -1
-  *
-  * @note     和 tcp_client_send() 一样，没在用的时候【直接丢弃】并打日志，
-  *           不阻塞等待 —— 调用方（命令解析）不该因为网络没通就卡住。
-  *
-  * @note     目的地址每次现算，而不是建 socket 时存一份全局的。
-  *           反正就十几个字节的填表，换来的是不必操心"上次存的地址
-  *           会不会是过期的"。
-  *
-  * @warning  返回成功只说明"交给 lwIP 了"，【不代表对方收到】。
-  *           UDP 没有确认、没有重传、没有连接状态，对端是死是活本地
-  *           完全看不出来。要确认对端还在，得靠上层自己约心跳。
-  */
 int udp_client_send(const char *data, int len)
 {
     struct sockaddr_in dest;
@@ -179,7 +144,7 @@ int udp_client_send(const char *data, int len)
 }
 
 /**
-  * @brief 主动往主节点报一次到
+  * @brief    主动往主节点报一次到
   *
   * @note  开头那包和周期心跳用的是同一条消息，所以抽成一个函数。
   *        ASCII 内容，原因同 tcp_client 那边：不挑编码，不会显示成乱码。
@@ -247,6 +212,8 @@ static void udp_client_task(void *pvParameters)
         local.sin_port        = htons(UDP_PORT);
         local.sin_addr.s_addr = INADDR_ANY;
 
+        /* 失败要先 close 再重试，而且下一轮会重新 socket()：
+           端口被占时，拿同一个 socket 反复 bind 会一直失败。 */
         if (bind(sock, (struct sockaddr *)&local, sizeof(local)) != 0) {
             printf("[udp] bind 端口 %d 失败 errno=%d，2 秒后重试\n", UDP_PORT, errno);
             close(sock);
@@ -275,8 +242,7 @@ static void udp_client_task(void *pvParameters)
 
             if (len > 0) {
                 /* 和 TCP 那边一样，recvfrom 交出来的是裸字节，也不保证是
-                   C 字符串（UDP 不会替你补 '\0'），这里【不做任何解释】，
-                   原样交给业务层的回调。 */
+                   C 字符串，这里【不做任何解释】，原样交给业务层的回调。 */
                 if (s_rx_handler != NULL) {
                     s_rx_handler(rxbuf, len);
                 }
@@ -302,14 +268,6 @@ static void udp_client_task(void *pvParameters)
     }
 }
 
-/**
-  * @brief 启用 UDP
-  *
-  * @note  任务只创建一次；之后每次调用只是把 s_running 置回 true。
-  *
-  * @note  参数：入口函数、任务名、栈大小(字节)、传参、优先级、句柄。
-  *        优先级和 tcp_client 一样是 5 —— 反正同一时刻只有一条在干活。
-  */
 void udp_client_start(void)
 {
     if (!s_task_started) {
@@ -319,13 +277,9 @@ void udp_client_start(void)
     s_running = true;
 }
 
-/**
-  * @brief 停用 UDP
-  *
-  * @note  只置标志，立刻返回 —— 关 socket 的活儿由任务自己收尾。
-  *        理由见 udp_client.h，一句话：调用方跑在这个任务自己的栈上。
-  */
 void udp_client_stop(void)
 {
+    /* 只置标志、立刻返回 —— 不能在这里等任务退出：调用本函数的代码
+       正跑在这个任务自己的栈上（回调链），等它退出就是在等自己。 */
     s_running = false;
 }
