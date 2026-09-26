@@ -2,8 +2,10 @@
 
 > 环境：ESP-01S（**1MB** flash）· ESP8266_RTOS_SDK v3.4（`v3.4-115-g858c7c2e`）
 >
-> 这份笔记对着项目里的三个文件写：[tcp_client.c](../main/tcp_client.c)、
-> [udp_client.c](../main/udp_client.c)、[wifi_sta.c](../main/wifi_sta.c)。
+> 这份笔记对着项目里的这些文件写：[tcp_client.c](../main/tcp_client.c)、
+> [udp_client.c](../main/udp_client.c)、[wifi_sta.c](../main/wifi_sta.c)；
+> §5 里还会用到 [cmd.c](../main/cmd.c)、[link.c](../main/link.c)、
+> [relay.c](../main/relay.c)。
 >
 > SDK 的结论都回查了源码，文中标 `文件:行号`；项目自己的用法标 `main/xxx.c:行号`。
 >
@@ -15,7 +17,7 @@
 2. [TCP 的 API 怎么用](#2-tcp-的-api-怎么用)
 3. [UDP 的 API 怎么用](#3-udp-的-api-怎么用)
 4. [STA 模式的 API 怎么用](#4-sta-模式的-api-怎么用)
-5. [三个文件的架构](#5-三个文件的架构)
+5. [模块的架构](#5-模块的架构)
 6. [附：这两个模块里反复出现的两个 C 坑](#6-附这两个模块里反复出现的两个-c-坑)
 7. [一页速查](#7-一页速查)
 
@@ -62,7 +64,7 @@ UDP 没这回事。主节点那边**根本不知道我们存在** —— 没有�
 #### ② 消息边界：拆包与粘包
 
 **TCP 是字节流，不是消息队列。** 你在网络调试助手里点一次"发送"，ESP 这边 `recv()`
-收到的可能是（[main.c:208-209](../main/main.c#L208-L209)）：
+收到的可能是（[cmd.c:24-25](../main/cmd.c#L24-L25)）：
 
 ```text
 ① 一次收到完整的 "开灯"        ← 最理想
@@ -71,7 +73,7 @@ UDP 没这回事。主节点那边**根本不知道我们存在** —— 没有�
 ```
 
 所以**绝对不能拿每次 `recv()` 到的内容直接去 `strcmp()`**。项目的做法是先把字节攒进
-缓冲区、再在缓冲区里找关键字（[main.c:544-570](../main/main.c#L544-L570)）。
+缓冲区、再在缓冲区里找关键字（[cmd.c:360-386](../main/cmd.c#L360-L386)）。
 
 **UDP 保留消息边界**：发一次 = 收一次，一包就是一包，② 那种情况不会发生
 （[udp_client.h:13-20](../main/udp_client.h#L13-L20)）。
@@ -107,9 +109,9 @@ TCP 没这个问题，因为 TCP 是我们拨出去的，主节点重启 → 连
 | 想做广播 / 组播 | UDP | TCP 根本做不了（没有连接就没法广播） |
 | 想做极省资源的点对点 | UDP | 8 字节头、无连接状态；而且 ESP-NOW 那条路就是从这儿长出去的 |
 
-运行期靠 `net tcp` / `net udp` 两条命令切（[main.c:302-303](../main/main.c#L302-L303)），
+运行期靠 `net tcp` / `net udp` 两条命令切（[cmd.c:122-123](../main/cmd.c#L122-L123)），
 同一时刻**只有一条在收** —— 两条都开的话，同一条命令会从两条路各到一次，
-"开灯"被执行两次（[main.c:166-167](../main/main.c#L166-L167)）。
+"开灯"被执行两次（[link.h:11-12](../main/link.h#L11-L12)）。
 
 #### 两个端口为什么故意取不同的号
 
@@ -709,36 +711,50 @@ if (esp_wifi_disconnect() != ESP_OK) {
 
 ---
 
-## 5. 三个文件的架构
+## 5. 模块的架构
 
 ### 5.1 分层
 
 ```text
         ┌──────────────────────────────────────────┐
         │  main.c                                  │
-        │  业务层：继电器、命令解析、链路切换        │
-        │  它知道"开灯"是什么                       │
+        │  粘合层 / 启动器                          │
+        │  只把下面这些按顺序接起来，不含业务逻辑     │
+        │  它【不知道】"开灯"是什么                  │
         └───────────────┬──────────────────────────┘
-                        │  只调这 6 个函数
-          ┌─────────────┴──────────────┐
-          ▼                            ▼
-   ┌──────────────┐            ┌──────────────┐
-   │ tcp_client.c │            │ udp_client.c │   ← 传输层
-   │ 纯传输：      │            │ 纯传输：      │     不知道"开灯"
-   │ 搬字节        │            │ 搬字节        │     是什么
-   └──────┬───────┘            └──────┬───────┘
-          └─────────────┬─────────────┘
+                        │ 注册回调 cmd_on_tcp_rx() / cmd_on_udp_rx()
                         ▼
-              ┌───────────────────┐
-              │ lwIP socket API   │   socket/connect/send/recv/sendto/recvfrom
-              │ （BSD 风格）       │
-              └─────────┬─────────┘
-                        ▼
-              ┌───────────────────┐
-              │ WiFi 驱动 + 硬件   │
-              └─────────┬─────────┘
-                        ▼
-                     空口（2.4GHz）
+        ┌──────────────────────────────────────────┐
+        │  cmd.c                                   │
+        │  业务层：攒字节 → 认关键字 → 派发动作       │
+        │  它知道"开灯"是什么                        │
+        └────┬───────────────────────────────┬─────┘
+             │ relay_on() / relay_off()      │ link_send() / link_switch()
+             ▼                               ▼
+      ┌──────────────┐              ┌──────────────┐
+      │ relay.c      │              │ link.c       │  ← 当前走 TCP 还是 UDP
+      │ GPIO0 拉高/低 │              │ 所有回执的出口 │     只有这一处知道
+      └──────────────┘              └──────┬───────┘
+                                           │ 选路
+                             ┌─────────────┴──────────────┐
+                             ▼                            ▼
+                      ┌──────────────┐            ┌──────────────┐
+                      │ tcp_client.c │            │ udp_client.c │   ← 传输层
+                      │ 纯传输：      │            │ 纯传输：      │     不知道"开灯"
+                      │ 搬字节        │            │ 搬字节        │     是什么
+                      └──────┬───────┘            └──────┬───────┘
+                             └─────────────┬─────────────┘
+                                           ▼
+                                 ┌───────────────────┐
+                                 │ lwIP socket API   │   socket/connect/send/recv/sendto/recvfrom
+                                 │ （BSD 风格）       │
+                                 └─────────┬─────────┘
+                                           ▼
+                                 ┌───────────────────┐
+                                 │ WiFi 驱动 + 硬件   │
+                                 └─────────┬─────────┘
+                                           ▼
+                                        空口（2.4GHz）
 ```
 
 `wifi_sta.c` 在**旁边**，不在这个栈里 —— 它管的是"**怎么连上网**"，
@@ -750,7 +766,7 @@ tcp_client.c / udp_client.c  ──调用──▶  wifi_sta_wait_ip()   （等�
 ```
 
 **反向的依赖一条都没有**：`wifi_sta.c` 不知道有 TCP 和 UDP 这两个模块存在。
-这就是为什么 `main.c` 里那条 `wifi` 命令能工作 —— 它调的是
+这就是为什么 `cmd.c` 里那条 `wifi` 命令能工作 —— 它调的是
 `wifi_sta_set_credentials()`，跟当前走的是哪条链路完全无关。
 
 ### 5.2 往下调用，往上回调
@@ -761,19 +777,21 @@ tcp_client.c / udp_client.c  ──调用──▶  wifi_sta_wait_ip()   （等�
 
 | 方向 | 机制 | 例子 |
 | --- | --- | --- |
-| 往下 | 直接函数调用 | `main.c` → `tcp_client_send()` |
+| 往下 | 直接函数调用 | `link.c` → `tcp_client_send()` |
 | 往上 | 注册回调函数指针 | `tcp_client` → `cmd_on_tcp_rx()` |
 
 **为什么往上不能也直接用函数调用？** 因为传输层**不知道业务层是谁**，
 它的任务在 `app_main()` 返回之后还在跑。如果不注册回调，
-传输层要么得 `#include "main.h"` 反向依赖（那就成了面条），
+传输层要么得 `#include "cmd.h"` 反向依赖（那就成了面条），
 要么得知道"开灯"是什么（那就不是纯传输层了）。
 
-注册这个动作在 `app_main()` 里（[main.c:656-657](../main/main.c#L656-L657)）：
+注册这个动作在 `app_main()` 里（[main.c:89-90](../main/main.c#L89-L90)）：
 
 ```c
-/* 必须先注册再启动 —— 注册晚了，第一段到达的数据会因为回调还是 NULL
-   而被悄悄丢掉。 */
+/* ③ 注册回调 —— 必须在 link_init() 之前：后者会立刻把链路启动起来，
+      注册晚了第一段到达的数据会因为回调还是 NULL 而被悄悄丢掉。
+
+      两个都注册：当前只有一条在收，但切换之后另一条需要自己的入口。 */
 tcp_client_set_rx_handler(cmd_on_tcp_rx);
 udp_client_set_rx_handler(cmd_on_udp_rx);
 ```
@@ -790,7 +808,7 @@ udp_client_set_rx_handler(cmd_on_udp_rx);
 ### 5.3 四条任务
 
 `app_main()` 本身不是任务的主体，它只是**把线接起来**
-（[main.c:640-679](../main/main.c#L640-L679)），接完就进一个空的死循环
+（[main.c:75-108](../main/main.c#L75-L108)），接完就进一个空的死循环
 （`while(1) vTaskDelay(1000)`）保持存活。
 
 真正干活的是这四条：
@@ -821,8 +839,9 @@ s_running = true;
 任务**只创建一次**，之后每次 `start()` 只是把 `s_running` 置回 true。
 所以 `net tcp` / `net udp` 来回切多少次，都不会多出任务来。
 
-**③ UDP 的任务是"懒创建"的**：`app_main()` 里**不**调 `udp_client_start()`
-（[main.c:662-666](../main/main.c#L662-L666)）。UDP 那条任务要等到第一次
+**③ UDP 的任务是"懒创建"的**：`app_main()` 里只调 `link_init(LINK_TCP)`
+（[main.c:92-97](../main/main.c#L92-L97)），而 `link_init()` 按传进来的参数
+**只启动一条** —— 传 `LINK_TCP` 就只起 TCP。UDP 那条任务要等到第一次
 `net udp` 才会被创建，在那之前一条任务都不多占。
 
 ### 5.4 `stop()` 为什么只置一个标志 —— 一条死锁链
@@ -832,7 +851,7 @@ s_running = true;
 看调用链：
 
 ```text
-main.c 的 link_switch()
+link.c 的 link_switch()
   └─ tcp_client_stop()
        └─ 【本函数正跑在 tcp_client_task 自己的栈上】 ← 关键
 ```
@@ -844,8 +863,7 @@ tcp_client_task → recv() → s_rx_handler()  → cmd_on_tcp_rx()
                                             → cmd_on_rx_from()
                                             → cmd_on_rx()
                                             → cmd_try_one()
-                                            → cmd_do_net()
-                                            → link_switch()
+                                            → link_switch()      ← switch 命中 ACT_NET_*
                                             → tcp_client_stop()
 ```
 
@@ -867,22 +885,25 @@ void tcp_client_stop(void)
 关闭 socket 的活儿由任务自己在下一轮循环里收尾。
 
 **代价**：真正断开要等 `recv()` 那一轮超时（最多 5 秒），或者重连等待那一轮
-（最多 2 秒）。这段窗口里**旧链路还在收** —— 这就是为什么 §5.5 需要那两道闸。
+（最多 2 秒）。这段窗口里**旧链路还在收** —— 这就是为什么 §5.5 需要那几道闸。
 
-### 5.5 `main.c` 的两道闸
+### 5.5 三道闸：链路和命令的护栏
+
+这三道闸原来都在 `main.c` 里，现在跟着代码分居 `link.c` 和 `cmd.c` ——
+**位置变了，职责没变**。
 
 #### 第一道：`link_send()` —— 所有回执只走一个出口
 
 ```c
-static int link_send(const char *data, int len)
+int link_send(const char *data, int len)
 {
     return (s_link == LINK_UDP) ? udp_client_send(data, len)
                                 : tcp_client_send(data, len);
 }
 ```
 
-[main.c:140-143](../main/main.c#L140-L143) 的注释说得很清楚：
-**本文件里所有回执一律调它，不再直接调 `tcp_client_send()`。**
+[link.h:58-61](../main/link.h#L58-L61) 的注释说得很清楚：
+**所有回执一律调它，不再直接调 `tcp_client_send()`。**
 漏掉哪一处，那条回执在 UDP 模式下就会往 TCP 发 —— 命令从 UDP 进来了，
 回复却跑去了另一条路，发送方会觉得"命令生效了但没回音"。
 
@@ -891,7 +912,7 @@ static int link_send(const char *data, int len)
 ```c
 static void cmd_on_rx_from(link_mode_t src, const char *data, int len)
 {
-    if (src != s_link) {
+    if (src != link_current()) {
         printf("[cmd] 忽略 %d 字节：来自已停用的链路\n", len);
         return;
     }
@@ -899,7 +920,7 @@ static void cmd_on_rx_from(link_mode_t src, const char *data, int len)
 }
 ```
 
-[main.c:579-582](../main/main.c#L579-L582)：因为 `stop()` 只是置标志，
+[cmd.c:395-398](../main/cmd.c#L395-L398)：因为 `stop()` 只是置标志，
 旧链路最多还能收 5 秒。**不管它的话**，切走之后发过来的命令照样会被执行，
 而回执走的是新链路 —— 发送方会觉得"我明明切走了，怎么还被遥控"。
 
@@ -911,18 +932,18 @@ static void cmd_on_rx_from(link_mode_t src, const char *data, int len)
 /* ① 先回执。此刻 s_link 还是旧值，所以走的是旧链路 —— 正是我们要的。 */
 link_send(mode == LINK_UDP ? "NET -> UDP\r\n" : "NET -> TCP\r\n");
 
-/* ② 再换向 */
+/* ② 再换向，然后停一条、起另一条。 */
 s_link = mode;
 ```
 
-[main.c:156-159](../main/main.c#L156-L159)：**反过来的话，这条回执会走新链路，
+[link.h:73-76](../main/link.h#L73-L76)：**反过来的话，这条回执会走新链路，
 而发命令的人正在旧链路上等着看结果 —— 永远等不到。**
 现象就是"发了 `net udp` 之后就再没动静了"，很容易误判成板子死了。
 
 #### 第三道：换链路时把命令缓冲区整个清空
 
 这一道挡的不是"旧链路的包"，而是**跨链路拼出来的命令**
-（[main.c:493-503](../main/main.c#L493-L503)）：
+（[cmd.c:313-323](../main/cmd.c#L313-L323)）：
 
 ```text
 旧链路上来了个 "开"   →  缓冲区里躺着 "开"，还没拼成完整命令
@@ -940,7 +961,7 @@ s_link = mode;
 
 #### 附：带参数的 `"wifi "` 命令为什么必须等到整行
 
-`cmd_do_wifi()` 的返回值和别的动作**不一样**（[main.c:336-339](../main/main.c#L336-L339)）：
+`cmd_do_wifi()` 的返回值和别的动作**不一样**（[cmd.c:156-159](../main/cmd.c#L156-L159)）：
 
 | 返回 | 含义 |
 | --- | --- |
@@ -953,7 +974,7 @@ s_link = mode;
 
 > 这里还有个容易忽略的规矩：如果 `"wifi "` 靠前但**整行还没到齐**，
 > 必须原样返回 `false` 继续等，**不能退回去执行表里那条**
-> —— 那等于把后面的命令提前执行了（[main.c:442-444](../main/main.c#L442-L444)）。
+> —— 那等于把后面的命令提前执行了（[cmd.c:262-264](../main/cmd.c#L262-L264)）。
 
 ---
 
@@ -986,7 +1007,7 @@ static void copy_str(char *dst, size_t dst_size, const char *src)
 
 ### 6.2 打印字节时 `char` 必须转 `unsigned char`
 
-`main.c` 的 `dump_hex()` 里（[main.c:518-532](../main/main.c#L518-L532)）：
+`cmd.c` 的 `dump_hex()` 里（[cmd.c:338-352](../main/cmd.c#L338-L352)）：
 
 ```c
 printf(" %02X", (unsigned char)data[i]);
@@ -1032,7 +1053,8 @@ STA 初始化顺序：
   reason 201 = 找不到 SSID（含 5GHz 热点）· 15/205 = 密码不对
 
 架构：
-  main.c（业务）→ tcp_client / udp_client（纯传输）→ lwIP → WiFi 驱动
+  main.c（粘合）→ cmd.c（业务）→ link.c（选路）→ tcp_client / udp_client（纯传输）
+  → lwIP → WiFi 驱动
   wifi_sta.c 在旁边，只管"怎么连上网"，被传输层依赖，反向不依赖
   上层往下调函数，下层往上调回调（set_rx_handler 必须在 start 之前）
   stop() 只能置标志 —— 它跑在要停的那条任务自己的栈上，等退出就是等自己
@@ -1048,8 +1070,8 @@ STA 初始化顺序：
 - [ESP8266-NVS.md](ESP8266-NVS.md) —— 凭据存在哪、`nvs_*` 的用法与坑
 - [ESP8266分区表.md](ESP8266分区表.md) —— flash 布局
 - [ESP8266配网踩坑(SmartConfig).md](ESP8266配网踩坑(SmartConfig).md) —— 那条被拆掉的配网路
-- `README.md` §9.1（三个模块各管一段 —— 本文 §5 的简短版，但写在 UDP 加进来之前，
-  表里还没有 `udp_client.c`）
+- `README.md` §9.1（模块分工 —— 本文 §5 的简短版）
 - `README.md` §9.2（拓扑与四值表）、§9.4/§9.5（命令解析的两个坑）、
   §9.6（换热点的操作纪律）、§9.7（连不上怎么查）
-- `main/tcp_client.h`、`main/udp_client.h`、`main/wifi_sta.h` —— 三个模块的接口契约
+- `main/tcp_client.h`、`main/udp_client.h`、`main/wifi_sta.h`、
+  `main/relay.h`、`main/link.h`、`main/cmd.h` —— 各模块的接口契约
