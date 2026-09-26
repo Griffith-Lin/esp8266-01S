@@ -25,10 +25,23 @@ typedef void (*tcp_rx_handler_t)(const char *data, int len);
 /* 注册收到数据的回调。必须在 tcp_client_start() 之前调用。 */
 void tcp_client_set_rx_handler(tcp_rx_handler_t handler);
 
-/* 启动 TCP 客户端任务。
-   它内部会先等 WiFi 拿到 IP，再去连服务端，所以可以放心地在
-   wifi_sta_init() 之后立刻调用。 */
+/* 启用 TCP。
+
+   任务只会被创建一次，重复调用等于"确保它开着" —— 从别的模式切回来时
+   直接调它就行，不会多出一条任务。内部会先等 WiFi 拿到 IP，再去连服务端，
+   所以可以放心地在 wifi_sta_init() 之后立刻调用。 */
 void tcp_client_start(void);
+
+/* 停用 TCP：关掉连接，任务转成空转，但【不退出】。
+
+   这样设计是因为调用它的地方（main.c 切链路的那个函数）本身就跑在
+   接收回调里，也就是跑在传输任务【自己】的栈上 —— 如果 stop() 去
+   等任务退出，就是在等自己，直接死锁。所以它只置一个标志就返回。
+
+   代价：真正断开要等 recv() 那一轮超时（最多 5 秒），或者重连等待
+   那一轮（最多 2 秒）。这段窗口里到达的包会被 main.c 的双重检查挡掉，
+   不会被执行。 */
+void tcp_client_stop(void);
 
 /* 往服务端发数据。len 传 0 表示自动按字符串长度算。
    返回实际发出的字节数；返回 -1 表示当前没连上（数据被丢弃）。 */
