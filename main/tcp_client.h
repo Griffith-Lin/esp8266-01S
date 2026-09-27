@@ -24,7 +24,7 @@
   * @warning 用电脑当主节点时，网络调试助手要监听 8086。
   *
   * @see     学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §2（TCP 的 API 怎么用）、
-  *          README §9.2（拓扑与四值表）
+  *          学习笔记/ESP8266开发流程.md §9.2（拓扑与四值表）
   */
 
 #pragma once

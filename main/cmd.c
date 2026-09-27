@@ -32,7 +32,7 @@
   *        UDP 保留消息边界，不会被拆开，但发送方仍然可以在一包里塞两条命令。
   *        所以下面这套写法【照旧必须留着】。
   *
-  * @see   学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §1.2、README §9.4
+  * @see   学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §1.2、学习笔记/ESP8266开发流程.md §9.4
   *
   * @par 坑 2：中文"长什么样"，取决于【谁】把它变成字节
   *
@@ -44,7 +44,7 @@
   *
   *   所以下面那张表把两种编码都收进来，另外再给一组纯 ASCII 的 on/off。
   *
-  * @see   学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §6.2（怎么看出来的）、README §9.5
+  * @see   学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §6.2（怎么看出来的）、学习笔记/ESP8266开发流程.md §9.5
   */
 #define CMD_BUF_SIZE  64
 

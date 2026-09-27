@@ -4,7 +4,7 @@
   *
   * 对外接口和那两个硬件警告见 relay.h。
   *
-  * @see     README §9.8
+  * @see     学习笔记/ESP8266开发流程.md §9.8
   */
 
 #include <stdio.h>

@@ -29,7 +29,7 @@
   * @warning "改配置"和"换固件"是两件事：改 WiFi 密码靠上面那条命令，
   *          换固件只能插串口线（本板 1MB，两个 app 槽放不下，所以没有 OTA）。
   *
-  * @see     README §9.1（模块分工）、§9.7（连不上怎么查）、§9.9（为什么没有 OTA）、
+  * @see     学习笔记/ESP8266开发流程.md §9.1（模块分工）、§9.7（连不上怎么查）、§9.9（为什么没有 OTA）、
   *          学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §5（整体架构）
   *
   * This example code is in the Public Domain (or CC0 licensed, at your option.)
@@ -55,7 +55,7 @@
   *
   * @note  spi_flash_get_chip_size() 读的是【编译时写进 sdkconfig 的值】，
   *        不是探测出来的 —— 所以这行打印不能用来判断板上真实有多少 flash。
-  *        要确认容量，用 esptool.py flash_id（见 README）。
+  *        要确认容量，用 esptool.py flash_id（见 学习笔记/ESP8266开发流程.md）。
   */
 static void print_chip_info(void)
 {

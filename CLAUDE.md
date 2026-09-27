@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-A Chinese-language **development notebook** for the ESP-01S (ESP8266) module. `README.md` is the
-main deliverable: a step-by-step guide covering toolchain setup, environment variables, build/flash,
-baud rates, boot-log analysis, partition tables, and TCP/WiFi control.
+A Chinese-language **development notebook** for the ESP-01S (ESP8266) module. The deliverables are
+the code in `main/` plus the notes under `学习笔记/`. The step-by-step guide — toolchain setup,
+environment variables, build/flash, baud rates, boot-log analysis, partition tables, TCP/WiFi
+control — is `学习笔记/ESP8266开发流程.md`; `README.md` is only the short project landing page.
 
 The code in `main/` **is a real application, not a stock example.** It began as the `hello_world`
 example from `$IDF_PATH/examples/get-started/`, but has since grown into a remotely controlled
@@ -14,10 +15,10 @@ relay, split by responsibility: `main.c` (glue and startup only — no business 
 (GPIO0 high/low), `cmd.c` (buffer, keyword table, dispatch), `link.c` (which transport is live;
 the single exit for every reply), `wifi_sta.c` (credentials in NVS, reconnect), `tcp_client.c` /
 `udp_client.c` (transport only; they know nothing about lights). The notes exist to explain that
-code, so keep prose and code in step when either changes. README §9.1 is the short version of that
-module map.
+code, so keep prose and code in step when either changes.
+`学习笔记/ESP8266开发流程.md` §9.1 is the short version of that module map.
 
-The slave's **master is an ESP32**, and the link was chosen deliberately (README §9.2, decided
+The slave's **master is an ESP32**, and the link was chosen deliberately (学习笔记/ESP8266开发流程.md §9.2, decided
 2026-09-25): the ESP32 runs a **SoftAP**, the slave is a **TCP client** to it, and no router is
 involved. The deciding question was *which address has to be known*. The slave hardcodes
 `TCP_SERVER_IP` in `tcp_client.c`, and the AP's `192.168.4.1` is a compile-time constant — assigned
@@ -37,7 +38,7 @@ ESP32's boot log rather than asserting it.
 
 **There is no provisioning fallback.** SmartConfig used to be `wifi_sta.c`'s answer to "the node
 can't reach its AP": the phone broadcast the credentials in special 802.11 frames and the node
-sniffed them. It was **removed** (see README §9.7), because the chain — phone WiFi driver → AP →
+sniffed them. It was **removed** (see 学习笔记/ESP8266开发流程.md §9.7), because the chain — phone WiFi driver → AP →
 promiscuous mode → the closed-source library — has four links we don't control and fails silently
 when any one of them does. A 60-second air probe measured 17090 frames and **0 broadcast data
 frames** on a busy channel with ~35 beacons/s, which is physically impossible (ARP/DHCP/mDNS/IPv6-ND
@@ -50,9 +51,11 @@ An OTA module (`ota.c`/`ota.h`) used to live in `main/`. It was **moved out** to
 1MB board — two slots don't fit. Do not move it back or re-add `ACT_OTA` without a larger module
 and a two-slot partition table. Its directory has its own README with the return procedure.
 
-`README.md` is written in Chinese in an explanatory teaching style — tables, blockquotes,
-"为什么" asides, tree diagrams, word-split mnemonic breakdowns. Match that voice when editing.
-The table of contents at the top is manual; update it when adding or renaming a section.
+Everything under `学习笔记/` is written in Chinese in an explanatory teaching style — tables,
+blockquotes, "为什么" asides, tree diagrams, word-split mnemonic breakdowns. Match that voice when
+editing. The table of contents at the top of a note is manual; update it when adding or renaming a
+section. `README.md` is the exception: it is a plain project landing page (简介 / 功能特性 /
+技术栈 / 快速开始 / 项目结构 / 待办事项), not teaching prose.
 
 ## The environment is the hard part
 
@@ -70,7 +73,7 @@ containing spaces or non-ASCII characters.
 Constraints responsible for most build failures:
 
 - **`mingw32.exe` does not inherit Windows environment variables.** `IDF_PATH` and `PATH` must be
-  re-exported in every new shell session (README §2). Running `make` from Git Bash, PowerShell, or a
+  re-exported in every new shell session (学习笔记/ESP8266开发流程.md §2). Running `make` from Git Bash, PowerShell, or a
   Claude Code Bash tool will fail — those shells have no toolchain on `PATH`.
 - **Python must be the 32-bit install** (`Python313-32`), not the 64-bit one.
 - **`setuptools` must stay pinned `<71`.** v71+ removed `pkg_resources`, which the SDK Makefiles
@@ -117,8 +120,8 @@ Hardware state matters more than the software:
 ## Two frontends, one SDK
 
 `Makefile` and `CMakeLists.txt` both exist and both are valid — they are the two supported frontends
-shipped with ESP8266_RTOS_SDK v3.4. `README.md` documents the `make` flow; the VSCode extension drives
-the CMake flow. Both consume the same SDK:
+shipped with ESP8266_RTOS_SDK v3.4. `学习笔记/ESP8266开发流程.md` documents the `make` flow; the VSCode
+extension drives the CMake flow. Both consume the same SDK:
 
 - `Makefile` → `$(IDF_PATH)/make/project.mk`
 - `CMakeLists.txt` → `$ENV{IDF_PATH}/tools/cmake/project.cmake`

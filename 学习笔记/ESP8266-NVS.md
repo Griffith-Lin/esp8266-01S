@@ -392,7 +392,7 @@ OTA is a way to replace the firmware over the network;
 it is NOT how you change WiFi credentials.
 ```
 
-- **换固件** → OTA（本项目没有，1MB 放不下两个槽，见 README §7）
+- **换固件** → OTA（本项目没有，1MB 放不下两个槽，见 ESP8266开发流程.md §9.9）
 - **换凭据** → NVS，隔着网络发一条命令
 
 ---
@@ -535,8 +535,8 @@ API 顺序（死的）：
 
 相关文档：
 
-- `README.md` §9.6 —— 换热点时的两种情形和那条操作纪律
-- `README.md` §9.7 —— 连不上了怎么查 + 为什么没有配网兜底
+- `ESP8266开发流程.md` §9.6 —— 换热点时的两种情形和那条操作纪律
+- `ESP8266开发流程.md` §9.7 —— 连不上了怎么查 + 为什么没有配网兜底
 - `学习笔记/ESP8266分区表.md` —— 分区表本身（nvs 那 24KB 是怎么划出来的）
 - `学习笔记/ESP8266配网踩坑(SmartConfig).md` —— 另一个"怎么把凭据送进 NVS"的方案，以及为什么放弃它
 - `main/wifi_sta.c` —— 本项目对 NVS 的全部用法（`nvs_load_credentials()` / `nvs_save_credentials()`）
