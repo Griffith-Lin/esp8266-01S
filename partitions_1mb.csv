@@ -25,12 +25,19 @@
 #   the same wrong config. It validated the mistake against itself.
 #
 # WHY NO OTA / NO SECOND SLOT:
-#   Two app slots do not fit here. Espressif's own 1MB dual-OTA table
-#   (components/partition_table/partitions_two_ota.1MB.csv) allows only
-#   0x70000 = 448KB per slot. The app binary is 606544 bytes.
+#   Two app slots do not fit here, either way you cut them:
+#     - halve the 960KB available for apps -> 480KB per slot
+#     - Espressif's own 1MB dual-OTA table
+#       (components/partition_table/partitions_two_ota.1MB.csv) -> 448KB
+#         per slot, tighter still because otadata takes a slice
+#   The firmware measures 496448 bytes (~485KB) as of 2026-09-29, and that
+#   build has NO OTA in it. So "does not fit" holds without even counting the
+#   OTA code itself - putting ota.c back only makes the number bigger, and a
+#   slot has to hold the whole firmware, upgrade code included.
 #   OTA is a way to replace the firmware over the network; it is NOT how you
 #   change WiFi credentials. Credentials live in nvs and can be pushed over
-#   TCP, or recovered with SmartConfig when the node is already offline.
+#   TCP while the node is reachable, or rewritten from its own setup web page
+#   when it is not (main/ap_prov.c, entered after 30 failed reconnects).
 #
 # Layout (offset + size == next offset, and the last entry ends at 0x100000):
 #
