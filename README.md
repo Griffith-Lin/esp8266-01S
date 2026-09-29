@@ -66,7 +66,7 @@ SoftAP，通过 TCP 或 UDP 接收命令，控制继电器吸合 / 释放。
 
 | 路径 | 说明 |
 | --- | --- |
-| `main/` | 固件源码，按职责分成几个模块：`relay.c` 继电器、`cmd.c` 命令解析、`link.c` 链路选择、`wifi_sta.c` 联网、`ap_prov.c` 配网兜底（连不上时开热点出网页）、`tcp_client.c` / `udp_client.c` 传输，`main.c` 只负责把它们接起来 |
+| `main/` | 固件源码，按职责分成几个模块：`relay.c` 继电器、`cmd.c` 命令解析、`link.c` 链路选择、`wifi_sta.c` 联网、`ap_prov.c` 配网兜底（连不上时开热点出网页）、`tcp_client.c` / `udp_client.c` / `mqtt_link.c` 传输，`main.c` 只负责把它们接起来 |
 | `学习笔记/` | 中文笔记：[开发流程](学习笔记/ESP8266开发流程.md)、[NVS](学习笔记/ESP8266-NVS.md)、[分区表](学习笔记/ESP8266分区表.md)、[TCP/UDP/WiFi-STA](学习笔记/ESP8266-TCP-UDP-WiFi-STA.md)、[配网踩坑](学习笔记/ESP8266配网踩坑(SmartConfig).md) |
 | `partitions_1mb.csv` | 分区表（**必须保持纯 ASCII**） |
 | `Doxyfile` | Doxygen 配置，用来渲染 `main/` 里的注释 |
