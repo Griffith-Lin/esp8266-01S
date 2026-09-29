@@ -22,30 +22,30 @@
      └─ 连上了？ ── 是 ──► 正常干活（TCP 连主节点、收命令）
           │
           否：断开事件 → 立刻重连，如此反复
-          │   每次断开 s_retry++                              wifi_sta.c:339
-          │   管理任务每 30 秒醒来查一次够不够                 wifi_sta.c:447,455
+          │   每次断开 s_retry++                              wifi_sta.c 里的 wifi_event_handler()
+          │   管理任务每 30 秒醒来查一次够不够                 wifi_sta.c 里的 wifi_mgr_task()
           ▼
      s_retry >= 30 且注册过回调
-          │   串口打印「已经失败 30 次了，转配网模式」          wifi_sta.c:459
+          │   串口打印「已经失败 30 次了，转配网模式」          wifi_sta.c 里的 wifi_mgr_task()
           ▼
-     ap_prov_run(ssid, 33, pass, 65)   ← 兜底从这里开始       wifi_sta.c:464
+     ap_prov_run(ssid, 33, pass, 65)   ← 兜底从这里开始       wifi_sta.c 里的 wifi_mgr_task()
           │   （阻塞：开热点、起网页，等人掏手机 —— 可能几分钟，也可能永远）
           ▼
-     拿到了 → sta_restart_from_prov() → 存 NVS → 重连         wifi_sta.c:465
-     没拿到 → s_retry = 0，回 STA 模式再试 30 次              wifi_sta.c:471
+     拿到了 → sta_restart_from_prov() → 存 NVS → 重连         wifi_sta.c 里的 wifi_mgr_task()
+     没拿到 → s_retry = 0，回 STA 模式再试 30 次              wifi_sta.c 里的 wifi_mgr_task()
 ```
 
-30 这个数是 `WIFI_RETRY_BEFORE_AP`（[wifi_sta.h:133](../main/wifi_sta.h#L133)）。
-**计数由"断开"事件驱动，检查由管理任务每 30 秒做一次**（`WIFI_DOWN_REPORT_MS`，[wifi_sta.c:99](../main/wifi_sta.c#L99)）。
+30 这个数是 `WIFI_RETRY_BEFORE_AP`（[wifi_sta.h](../main/wifi_sta.h)）。
+**计数由"断开"事件驱动，检查由管理任务每 30 秒做一次**（`WIFI_DOWN_REPORT_MS`，[wifi_sta.c](../main/wifi_sta.c)）。
 判断用的是 `>=`，所以第 30 次失败不会被漏掉 —— 代价是最多再晚 30 秒才进配网。
 改这两个值的后果不一样：改 `WIFI_RETRY_BEFORE_AP` 是改"失败几次"，改 `WIFI_DOWN_REPORT_MS` 是改"多久检查一次"。
 
 > **为什么这一整段要放在管理任务里等？**
 > 因为配网的本质是"等一个人走过来掏手机"，是长时间阻塞。而**事件回调跑在系统的事件循环任务上**
 > —— 在那里阻塞，整个 WiFi 状态机就停摆了。管理任务本来就是干"等"这件事的
-> （[wifi_sta.c:420-423](../main/wifi_sta.c#L420-L423)）。
+> （[`wifi_sta.c` 里的 `wifi_mgr_task()`](../main/wifi_sta.c)）。
 >
-> 顺带解释了它为什么是 6144 字节栈（[wifi_sta.c:556](../main/wifi_sta.c#L556)）：
+> 顺带解释了它为什么是 6144 字节栈（[`wifi_sta.c` 里的 `wifi_sta_init()`](../main/wifi_sta.c)）：
 > 这个数是从 4096 加上去的，加它的那次提交就叫「适配新增的配网功能」（`5650c5e6`）——
 > 配网那一整段（开热点、起网页、解析请求）都跑在这条任务的栈上。
 
@@ -72,16 +72,16 @@
 
 **反过来不行**：wifi_sta.c 要是 include 了 ap_prov.h，两个文件就绕成一个环了。所以 wifi_sta.c
 用的是**回调** —— 它只声明"我数够了会喊一个人，签名叫 `wifi_sta_giveup_cb_t`"
-（[wifi_sta.h:154](../main/wifi_sta.h#L154)），至于喊来的是 `ap_prov_run` 还是别的什么，
+（[`wifi_sta_giveup_cb_t`](../main/wifi_sta.h)），至于喊来的是 `ap_prov_run` 还是别的什么，
 由 main.c 一行接线决定：
 
 ```c
-/* main.c:94 */
+/* main.c 里的 app_main() */
 wifi_sta_set_giveup_handler(ap_prov_run);
 ```
 
 > **没注册回调会怎样？** 管理任务照常往下走，于是就成了"没有这个功能"，
-> 行为和加它之前一模一样（[wifi_sta.c:453-454](../main/wifi_sta.c#L453-L454)）。
+> 行为和加它之前一模一样（[`wifi_sta.c` 里的 `wifi_mgr_task()`](../main/wifi_sta.c)）。
 > 这是刻意的：**兜底功能不该变成必经之路** —— 它坏了，正常联网那条路不受影响。
 
 ## 3. 一次配网的时序：两条任务 + 一个事件组
@@ -123,13 +123,13 @@ esp_wifi_set_mode(STA)
 
 | 顺序 | 反了会怎样 |
 | --- | --- |
-| 先发回执，**再**点事件位（[ap_prov.c:487-491](../main/ap_prov.c#L487-L491)） | 先点牌子的话，`ap_prov_run()` 那边可能立刻开始拆服务器，而这个 socket 一个字节还没写出去 —— 用户看到的是"点了保存没反应" |
-| 点完牌子再等 **1.5 秒**才拆（[ap_prov.c:655-661](../main/ap_prov.c#L655-L661)） | ① 回执发出去 ≠ 手机画出来了，停热点会当场掐断这条连接；② 处理函数还要再返回一步，服务端在它返回之前就被拆掉，收尾动作会踩在一个正在退出的会话上 |
-| 先 `httpd_stop()` **再** `esp_wifi_stop()`（[ap_prov.c:653-667](../main/ap_prov.c#L653-L667)） | 反过来，网页还活着的那一小会儿它的网卡已经没了，那条 socket 会以什么方式结束就不好说了 |
+| 先发回执，**再**点事件位（[`ap_prov.c` 里的 `save_post_handler()`](../main/ap_prov.c)） | 先点牌子的话，`ap_prov_run()` 那边可能立刻开始拆服务器，而这个 socket 一个字节还没写出去 —— 用户看到的是"点了保存没反应" |
+| 点完牌子再等 **1.5 秒**才拆（[`ap_prov.c` 里的 `ap_prov_run()`](../main/ap_prov.c)） | ① 回执发出去 ≠ 手机画出来了，停热点会当场掐断这条连接；② 处理函数还要再返回一步，服务端在它返回之前就被拆掉，收尾动作会踩在一个正在退出的会话上 |
+| 先 `httpd_stop()` **再** `esp_wifi_stop()`（[`ap_prov.c` 里的 `ap_prov_run()`](../main/ap_prov.c)） | 反过来，网页还活着的那一小会儿它的网卡已经没了，那条 socket 会以什么方式结束就不好说了 |
 
 > **返回时 WiFi 是什么状态？** 停着的、STA 模式 —— 热点已经关了，STA 也还没启动。
 > 接着连的动作（存 NVS + `esp_wifi_start()`）是调用方的事
-> （[ap_prov.h:70-73](../main/ap_prov.h#L70-L73)）。这样切的好处是：
+> （[`ap_prov.h` 里的 `ap_prov_run()`](../main/ap_prov.h)）。这样切的好处是：
 > **ap_prov.c 从头到尾不必知道"凭据最后要拿去干嘛"**，它只管把两个字符串收上来交出去。
 
 ## 4. 手机侧：它是怎么走到 192.168.4.1 的
@@ -138,15 +138,15 @@ esp_wifi_set_mode(STA)
 
 | 白送的东西 | 谁给的 |
 | --- | --- |
-| `192.168.4.1` 这个地址 | `tcpip_adapter_init()` 里 `IP4_ADDR()` 写死的**编译期常量**（`tcpip_adapter_lwip.c:207-209`），不是 DHCP 分的 |
-| DHCP 服务器 | AP 一启动，`handle_ap_start()` 就调 `tcpip_adapter_start(IF_AP, ...)`，里面 `dhcps_start()`（`tcpip_adapter_lwip.c:359`） |
+| `192.168.4.1` 这个地址 | `tcpip_adapter_init()` 里 `IP4_ADDR()` 写死的**编译期常量**（`tcpip_adapter_lwip.c`），不是 DHCP 分的 |
+| DHCP 服务器 | AP 一启动，`handle_ap_start()` 就调 `tcpip_adapter_start(IF_AP, ...)`，里面 `dhcps_start()`（`tcpip_adapter_lwip.c` 里的 `tcpip_adapter_start()`） |
 | 手机上的"已连接" | WPA2-PSK + 8 字节密码（`AP_PASSWORD`），短了热点根本起不来 |
 
 手机分到的地址来自池子 —— 串口上那行
 `softAP assign IP to station,IP is: 192.168.4.2` 就是它。
 
 **但 DNS 是坏的，而且这不是 bug。** DHCP 的 OFFER 里确实带了 DNS 服务器选项，
-默认指向板子自己（`dhcpserver.c:313-315` 把 `ipadd` 设成 AP 自己的地址，`:355-366`
+默认指向板子自己（`dhcpserver.c` 里的 `add_offer_options()` 把 `ipadd` 设成 AP 自己的地址；没配 DNS 时同一个 `ipadd` 又被当成默认 DNS 发出去
 无条件写选项 6：没配置过 `dhcps_dns` 就把 `ipadd` 写进去）——**可 ESP 上没有任何东西在听 UDP 53。**
 
 | 后果 | 手机上的表现 |
@@ -166,20 +166,20 @@ esp_wifi_set_mode(STA)
 由一个跑在板子上的 TCP 服务器临时拼出来发过去。所以准确的说法不是"托管了一个网页"，
 而是"实现了一个 web 服务器"。
 
-`httpd_start()` 起一条 FreeRTOS 任务（`httpd_main.c:373-377`，任务名就叫 `"httpd"`），
-配置来自 `HTTPD_DEFAULT_CONFIG()`（[ap_prov.c:511](../main/ap_prov.c#L511)）：默认栈 4096、
-优先级 `tskIDLE_PRIORITY+5`、**80 端口**（`esp_http_server.h:35-37`）。
+`httpd_start()` 起一条 FreeRTOS 任务（`httpd_main.c`，任务名就叫 `"httpd"`），
+配置来自 `HTTPD_DEFAULT_CONFIG()`（[`ap_prov.c` 里的 `start_ap_and_web()`](../main/ap_prov.c)）：默认栈 4096、
+优先级 `tskIDLE_PRIORITY+5`、**80 端口**（`esp_http_server.h` 里的 `HTTPD_DEFAULT_CONFIG` 宏）。
 它 accept 之后解析请求，拿「方法 + 路径」去查一张**注册过的路由表**：
 
 | 方法 | 路径 | 处理函数 | 干什么 |
 | --- | --- | --- | --- |
-| GET | `/` | [`root_get_handler`](../main/ap_prov.c#L410) | 发表单页 |
-| POST | `/save` | [`save_post_handler`](../main/ap_prov.c#L441) | 收凭据 |
+| GET | `/` | [`root_get_handler`](../main/ap_prov.c) | 发表单页 |
+| POST | `/save` | [`save_post_handler`](../main/ap_prov.c) | 收凭据 |
 
 表里没有的一律 404 —— 浏览器自动来要的 `/favicon.ico` 就是这么变成两条警告的
 （页面里内嵌一张 1×1 的 GIF 就是为了让它别来）。
 
-ap_prov.c 只改了三处默认值（[ap_prov.c:557-566](../main/ap_prov.c#L557-L566)）：
+ap_prov.c 只改了三处默认值（[`ap_prov.c` 里的 `start_ap_and_web()`](../main/ap_prov.c)）：
 
 | 字段 | 默认 | 这里 | 为什么 |
 | --- | --- | --- | --- |
@@ -188,11 +188,11 @@ ap_prov.c 只改了三处默认值（[ap_prov.c:557-566](../main/ap_prov.c#L557-
 | `lru_purge_enable` | **false** | **true** | **必须开**：手机开页面会同时占好几条连接且经常不主动关，槽位满了新连接被直接拒掉 —— 表现是"热点明明连上了，页面就是打不开"，刷新多少次都没用 |
 
 > **请求头的上限不在这张表里。** 它是编译期的 `CONFIG_HTTPD_MAX_REQ_HDR_LEN`
-> （`esp_http_server.h:280` → Kconfig，默认 512），我们调成了 2048。
+> （`esp_http_server.h` → Kconfig，默认 512），我们调成了 2048。
 > `httpd_config_t` 里**根本没有**这个字段，所以运行时代码改不了它 —— 这是踩过的坑，
 > 见 [ESP8266开发流程.md](ESP8266开发流程.md) §10.8。
 
-页面是怎么发出去的（[ap_prov.c:410-424](../main/ap_prov.c#L410-L424)）：
+页面是怎么发出去的（[`ap_prov.c` 里的 `root_get_handler()`](../main/ap_prov.c)）：
 
 ```c
 httpd_resp_set_type(req, "text/html; charset=utf-8");  /* 少了它中文乱码 */
@@ -208,21 +208,21 @@ httpd_resp_send_chunk(req, NULL, 0);         /* 长度 0 = 发完了 */
 > **最后那个长度 0 的调用是必须的**：chunked 编码没有它，浏览器会一直等
 > "后面还有没有"，页面永远转圈 —— 而固件这边看上去一切正常。这是最难查的一类故障。
 
-表单本体（[ap_prov.c:336-346](../main/ap_prov.c#L336-L346)）里，两个 `name` 是后端取值的钥匙：
+表单本体（[`ap_prov.c` 里的 `PAGE_TAIL[]`](../main/ap_prov.c)）里，两个 `name` 是后端取值的钥匙：
 `name="ssid"` / `name="pass"`，提交方式是 `method="POST" action="/save"`。
 **改了 `name=` 而不改 `httpd_query_key_value()` 那两个实参，就对不上了** —— 两边是一对，改一处必改另一处。
 
 ## 6. 凭据是怎么被解出来的
 
 浏览器提交的正文是 `application/x-www-form-urlencoded`，形如 `ssid=xxx&pass=yyy`，
-两个值都做过转义。所以 [save_post_handler](../main/ap_prov.c#L441) 里是四步：
+两个值都做过转义。所以 [save_post_handler](../main/ap_prov.c) 里是四步：
 
 ```text
-① recv_body()              按 req->content_len 收，不是"读到读不动为止"        :262-285
+① recv_body()              按 req->content_len 收，不是"读到读不动为止"        ap_prov.c
                            正文不保证以 '\0' 结尾，只能按长度收
 ② httpd_query_key_value()  把两个字段切出来 —— 它【不做】转义还原
-③ url_decode()             自己还原 %XX 和 +（空格提交上来是 '+'，一个汉字三组 %XX）  :176
-④ 校验字节长度 → 发回执 → 点事件位                                        :467-491
+③ url_decode()             自己还原 %XX 和 +（空格提交上来是 '+'，一个汉字三组 %XX）  ap_prov.c
+④ 校验字节长度 → 发回执 → 点事件位                                        ap_prov.c
 ```
 
 两个值直接解进模块自己的 `s_new_ssid` / `s_new_pass`，容量正好是协议上限加一个 `'\0'`
@@ -273,10 +273,10 @@ httpd_resp_send_chunk(req, NULL, 0);         /* 长度 0 = 发完了 */
 
 | 想改什么 | 去哪儿 |
 | --- | --- |
-| 失败几次才转配网 | `WIFI_RETRY_BEFORE_AP`，[wifi_sta.h:133](../main/wifi_sta.h#L133) |
-| 多久检查一次、日志多久吭一声 | `WIFI_DOWN_REPORT_MS`，[wifi_sta.c:99](../main/wifi_sta.c#L99) |
-| 管理任务的栈 | [wifi_sta.c:556](../main/wifi_sta.c#L556) 那个 6144 |
-| 谁来兜底 | [main.c:94](../main/main.c#L94) 的 `wifi_sta_set_giveup_handler()` |
+| 失败几次才转配网 | `WIFI_RETRY_BEFORE_AP`，[wifi_sta.h](../main/wifi_sta.h) |
+| 多久检查一次、日志多久吭一声 | `WIFI_DOWN_REPORT_MS`，[wifi_sta.c](../main/wifi_sta.c) |
+| 管理任务的栈 | [`wifi_sta.c` 里的 `wifi_sta_init()`](../main/wifi_sta.c) 那个 6144 |
+| 谁来兜底 | [`main.c` 里的 `app_main()`](../main/main.c) 的 `wifi_sta_set_giveup_handler()` |
 | 热点的名字前缀 / 密码 / 信道 / 最多几台 | ap_prov.c 顶部的 `AP_SSID_PREFIX` / `AP_PASSWORD` / `AP_CHANNEL` / `AP_MAX_CONN` |
 | 网页长什么样 | ap_prov.c 的 `PAGE_HEAD` / `PAGE_TAIL` |
 | 表单字段名 | `PAGE_TAIL` 的 `name=` **和** `save_post_handler` 里 `httpd_query_key_value()` 的实参，两处一起改 |
@@ -291,7 +291,7 @@ httpd_resp_send_chunk(req, NULL, 0);         /* 长度 0 = 发完了 */
 
 ```text
 触发    wifi_sta.c 数到 30 次失败 → 回调 → ap_prov_run()
-接线    main.c:94   wifi_sta_set_giveup_handler(ap_prov_run)
+接线    main.c      wifi_sta_set_giveup_handler(ap_prov_run)
 热点    ESP-01S-Setup-<AP MAC 后两字节> / 12345678 / 信道 1 / 最多 2 台
 地址    192.168.4.1（编译期常量，不是 DHCP 分的）；手机拿到 192.168.4.2
 DNS     没有。DHCP 把 192.168.4.1 当 DNS 给了手机，可那儿没人听 → 域名全废，只能输 IP

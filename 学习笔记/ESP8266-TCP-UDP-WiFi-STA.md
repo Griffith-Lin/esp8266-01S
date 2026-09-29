@@ -7,7 +7,8 @@
 > §5 里还会用到 [cmd.c](../main/cmd.c)、[link.c](../main/link.c)、
 > [relay.c](../main/relay.c)。
 >
-> SDK 的结论都回查了源码，文中标 `文件:行号`；项目自己的用法标 `main/xxx.c:行号`。
+> SDK 的结论都回查了源码，文中标到 `文件 + 函数/宏名`（行号会随代码改动腐烂，符号名不会）；
+> 项目自己的用法直接给文件名。
 >
 > 配套阅读：[ESP8266-NVS.md](ESP8266-NVS.md)（凭据存在哪）、ESP8266开发流程.md §9.2（拓扑与四值表）、§9.7（连不上怎么查）
 
@@ -39,7 +40,7 @@ TCP 是**我们拨出去**的，所以对端 `accept()` 的那一刻就知道我
 
 UDP 没这回事。主节点那边**根本不知道我们存在** —— 没有连接可建，它手上没有任何
 关于我们的信息。所以 `udp_client.c` 一上来就得先喊一包
-（[udp_client.c:230](../main/udp_client.c#L230) 的 `udp_announce()`），
+（[udp_client.c](../main/udp_client.c) 的 `udp_announce()`），
 主节点才能从**源地址**学到"该往哪儿回"。
 
 > 这一条直接决定了回包规则：
@@ -47,12 +48,12 @@ UDP 没这回事。主节点那边**根本不知道我们存在** —— 没有�
 > - TCP 模式：主节点对每个 `accept()` 出来的连接回包，天然一对一
 > - UDP 模式：主节点得维护一张"谁在哪"的表，或者干脆约定"回源 IP:8087"
 >   —— 本项目用的是后者，所以 `udp_client.c` 才要 `bind()` 一个**固定端口**
->   （[udp_client.c:205-213](../main/udp_client.c#L205-L213)）
+>   （[`udp_client.c` 里的 `udp_client_task()`](../main/udp_client.c)）
 
 #### ② 消息边界：拆包与粘包
 
 **TCP 是字节流，不是消息队列。** 你在网络调试助手里点一次"发送"，ESP 这边 `recv()`
-收到的可能是（[cmd.c:24-25](../main/cmd.c#L24-L25)）：
+收到的可能是（[`cmd.c` 里的 `CMD_BUF_SIZE` 宏](../main/cmd.c)）：
 
 ```text
 ① 一次收到完整的 "开灯"        ← 最理想
@@ -61,10 +62,10 @@ UDP 没这回事。主节点那边**根本不知道我们存在** —— 没有�
 ```
 
 所以**绝对不能拿每次 `recv()` 到的内容直接去 `strcmp()`**。项目的做法是先把字节攒进
-缓冲区、再在缓冲区里找关键字（[cmd.c:360-386](../main/cmd.c#L360-L386)）。
+缓冲区、再在缓冲区里找关键字（[`cmd.c` 里的 `cmd_on_rx()`](../main/cmd.c)）。
 
 **UDP 保留消息边界**：发一次 = 收一次，一包就是一包，② 那种情况不会发生
-（[udp_client.h:13-20](../main/udp_client.h#L13-L20)）。
+（[udp_client.h](../main/udp_client.h)）。
 
 > ⚠️ 但 **③ 还是会发生** —— 发送方完全可以在一个数据报里塞两条命令。
 > 所以那套"攒起来再找关键字"的写法**照旧必须留着**。
@@ -78,12 +79,12 @@ UDP 没这回事。主节点那边**根本不知道我们存在** —— 没有�
 | 对端重启 | 连接会断，`recv()` 返回 0，立刻知道 | **毫无感知** |
 | 本地怎么发现链路断了 | `send()`/`recv()` 报错 | 没辙，只能上层自己约心跳 |
 
-第三种情况是本项目加心跳的真正原因（[udp_client.c:79-82](../main/udp_client.c#L79-L82)）：
+第三种情况是本项目加心跳的真正原因（[`udp_client.c` 里的 `UDP_ANNOUNCE_MS` 宏](../main/udp_client.c)）：
 **主节点一重启，它记的地址就没了**，而我们从节点收不到任何通知（UDP 无连接）。
 没有周期心跳的话，我们会一直以为链路好好的，主节点却再也找不到我们 ——
 直到我们自己也被重启一次。
 
-所以 `UDP_ANNOUNCE_MS = 30000`（[udp_client.c:87](../main/udp_client.c#L87)）：
+所以 `UDP_ANNOUNCE_MS = 30000`（[udp_client.c](../main/udp_client.c)）：
 30 秒是权衡，够短（主节点重启后半分钟内链路自动恢复），够长（不至于在空口上刷屏）。
 TCP 没这个问题，因为 TCP 是我们拨出去的，主节点重启 → 连接断 → `recv()` 返回 0 → 重连。
 
@@ -97,9 +98,9 @@ TCP 没这个问题，因为 TCP 是我们拨出去的，主节点重启 → 连
 | 想做广播 / 组播 | UDP | TCP 根本做不了（没有连接就没法广播） |
 | 想做极省资源的点对点 | UDP | 8 字节头、无连接状态；而且 ESP-NOW 那条路就是从这儿长出去的 |
 
-运行期靠 `net tcp` / `net udp` 两条命令切（[cmd.c:122-123](../main/cmd.c#L122-L123)），
+运行期靠 `net tcp` / `net udp` 两条命令切（[`cmd.c` 里的 `s_cmds[]`](../main/cmd.c)），
 同一时刻**只有一条在收** —— 两条都开的话，同一条命令会从两条路各到一次，
-"开灯"被执行两次（[link.h:11-12](../main/link.h#L11-L12)）。
+"开灯"被执行两次（[link.h](../main/link.h)）。
 
 #### 两个端口为什么故意取不同的号
 
@@ -108,7 +109,7 @@ TCP 用 **8086**，UDP 用 **8087**。其实 UDP 端口和 TCP 端口是
 
 项目还是把它们分开了，理由是**给人看的**：重号之后，看日志、抓包、配防火墙，
 都得先在脑子里换算一次"这是哪个协议的那个 8086"。没必要给自己挖这个坑
-（[udp_client.c:51-53](../main/udp_client.c#L51-L53)）。
+（[`udp_client.c` 里的 `UDP_PORT` 宏](../main/udp_client.c)）。
 
 ---
 
@@ -127,10 +128,8 @@ recv(sock, buf, sizeof(buf), 0);                        // ⑤ 收
 close(sock);                                            // ⑥ 挂断
 ```
 
-对应项目里的位置：[tcp_client.c:144](../main/tcp_client.c#L144)、
-[153](../main/tcp_client.c#L153)、[165](../main/tcp_client.c#L165)、
-[102](../main/tcp_client.c#L102)、[186](../main/tcp_client.c#L186)、
-[215](../main/tcp_client.c#L215)。
+对应项目里的位置：[tcp_client.c 里的 `tcp_client_task()`](../main/tcp_client.c)
+一个函数里，六步挨着写下来。
 
 ### 2.2 逐个说
 
@@ -142,12 +141,12 @@ int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
                    IPv4     流式（有连接）   具体协议 */
 ```
 
-对比 UDP 那句（[udp_client.c:191](../main/udp_client.c#L191)）就一眼看出区别了：
+对比 UDP 那句（[`udp_client.c` 里的 `udp_client_task()`](../main/udp_client.c)）就一眼看出区别了：
 `SOCK_DGRAM` + `IPPROTO_UDP`。**这三元组决定了后面能用哪些 API。**
 
 > ⚠️ 但别把"能调"和"按你想的跑"混为一谈，这里有个 lwIP 的实现细节值得知道：
 > **在 TCP socket 上调 `sendto()` 不会报错**，它只是把地址参数**丢掉**，
-> 转成 `send()`（`lwip/src/api/sockets.c:1659-1662`）：
+> 转成 `send()`（`lwip/src/api/sockets.c` 里的 `lwip_sendto()`）：
 >
 > ```c
 > if (NETCONNTYPE_GROUP(netconn_type(sock->conn)) == NETCONN_TCP) {
@@ -170,10 +169,10 @@ setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 ```
 
 没有它，`recv()` 默认是**永远阻塞**的。后果不是"等得久一点"，而是：
-**连接半死不活的时候，这条任务再也醒不过来了**（[tcp_client.c:203-205](../main/tcp_client.c#L203-L205)）。
+**连接半死不活的时候，这条任务再也醒不过来了**（[`tcp_client.c` 里的 `tcp_client_task()`](../main/tcp_client.c)）。
 
 而且这个超时在项目里是**双重身份**：
-[udp_client.c:63-66](../main/udp_client.c#L63-L66) 说得更直白 —— 它既让任务有机会
+[`udp_client.c` 里的 `UDP_RECV_TIMEOUT_S` 宏](../main/udp_client.c) 说得更直白 —— 它既让任务有机会
 看到 `s_running` 被置成 false，又顺便充当心跳的定时点。
 
 > 超时**不算错误**。`recv()` 超时会返回 -1 并设 `errno = EWOULDBLOCK`，
@@ -210,7 +209,7 @@ TCP 保证的是"最终有序可靠送达，否则报错"，不是"`send()` 返�
 
 #### `recv()` —— 三种返回值，三种意思
 
-这是最需要记清楚的一个。项目里的处理（[tcp_client.c:186-208](../main/tcp_client.c#L186-L208)）：
+这是最需要记清楚的一个。项目里的处理（[`tcp_client.c` 里的 `tcp_client_task()`](../main/tcp_client.c)）：
 
 | 返回值 | 含义 | 项目怎么处理 |
 | --- | --- | --- |
@@ -228,7 +227,7 @@ printf("[tcp] 接收出错 errno=%d\n", errno);   /* 真错误 */
 break;
 ```
 
-> `EWOULDBLOCK` 和 `EAGAIN` 在 lwIP 里是**同一个值**（`errno.h:88`：
+> `EWOULDBLOCK` 和 `EAGAIN` 在 lwIP 里是**同一个值**（`lwip/errno.h`：
 > `#define EWOULDBLOCK EAGAIN`），所以这两个判断其实是重复的。
 > 留着两个是为了可读性 —— POSIX 允许它们不同，代码将来挪到别的栈上就不用改。
 
@@ -248,7 +247,7 @@ close(sock);
 - **`s_sock = -1` 要在 `close()` 之前**。`s_sock` 是对外公开的句柄，
   `tcp_client_send()` 靠它判断"能不能发"。先关再置 -1 的话，中间那一瞬间
   别的任务可能拿着一个已经关掉的 fd 去 `send()`。
-- **关 socket 的动作只由任务自己做**（[tcp_client.c:68-73](../main/tcp_client.c#L68-L73)）。
+- **关 socket 的动作只由任务自己做**（[`tcp_client.c` 里的 `s_running`](../main/tcp_client.c)）。
   原因见 §5.4，是一条死锁链。
 
 ### 2.3 连接失败时，errno 在说什么
@@ -264,14 +263,13 @@ close(sock);
 | 104 | `ECONNRESET` | Connection reset by peer | 连接中途被对方强行掐断 |
 | 98 | `EADDRINUSE` | Address already in use | 端口被占（UDP 的 `bind()` 常见） |
 
-对应行号：`errno.h:162`（113）、`:160`（111）、`:159`（110）、
-`:150`（101）、`:153`（104）、`:147`（98）。
+这些宏都定义在 `lwip/errno.h` 里，括号里的数字是 lwIP 给它们编的值。
 
 > **113 和 111 的区别是最常被搞混的一对**，而且它们的排查方向相反：
 >
 > - **113** = 包在**路由那一步**就没出去。写法是**错网段**了 ——
 >   节点在 `192.168.137.x`，却去连 `192.168.4.1`，中间没有路由能过去。
->   这是"两套地址只切了一半"的典型症状（[tcp_client.c:25-32](../main/tcp_client.c#L25-L32)）。
+>   这是"两套地址只切了一半"的典型症状（[`tcp_client.c` 里的 `TCP_SERVER_IP` 宏](../main/tcp_client.c)）。
 > - **111** = 包到了对方机器，对方明确拒绝了。说明**网络是通的**，
 >   问题在"那个端口上没人监听" —— 网络调试助手没开监听，或者监听的端口不对。
 >
@@ -307,12 +305,12 @@ if (bind(sock, (struct sockaddr *)&local, sizeof(local)) != 0) { ... }
 ```
 
 **不 bind 也能跑** —— lwIP 会在第一次 `sendto()` 时随便挑一个临时端口
-（`lwip/src/core/udp.c:992-994`：端口传 0 就走 `udp_new_port()` 自动分配）。
+（`lwip/src/core/udp.c` 里的 `udp_bind()`：端口传 0 就走 `udp_new_port()` 自动分配）。
 但那意味着：**我们每次的源端口都可能变**，而主节点的回包规则是
 "回源 IP:端口" —— 端口一变，回包就发错地方了。
 
 所以 `bind()` 在这里的作用是：**把本机端口钉死，让主节点的回包规则没有歧义**
-（[udp_client.c:205-213](../main/udp_client.c#L205-L213)）。
+（[`udp_client.c` 里的 `udp_client_task()`](../main/udp_client.c)）。
 
 `INADDR_ANY` 的含义是"收本机所有网卡上的这个端口"（不是"随便挑一个地址"）。
 
@@ -336,11 +334,11 @@ return sendto(s_sock, data, len, 0, (struct sockaddr *)&dest, sizeof(dest));
 最后两个参数就是"发给谁"，**每次调用都得填** —— 因为 UDP socket 不记这个。
 
 > 项目**故意每次现算**，而不是建 socket 时存一份全局的
-> （[udp_client.c:137-140](../main/udp_client.c#L137-L140)）：
+> （[`udp_client.c` 里的 `udp_client_send()`](../main/udp_client.c)）：
 > 反正就十几个字节的填表，换来的是不必操心"上次存的地址会不会是过期的"。
 
 ⚠️ **`sendto()` 返回成功不代表对方收到了。** UDP 没有确认、没有重传、
-没有连接状态 —— 对方是死是活，本地完全看不出来（[udp_client.c:142-143](../main/udp_client.c#L142-L143)）。
+没有连接状态 —— 对方是死是活，本地完全看不出来（[`udp_client.c` 里的 `udp_client_send()`](../main/udp_client.c)）。
 
 #### `recvfrom()` —— 那个 `from` 参数，项目故意不用
 
@@ -355,7 +353,7 @@ int len = recvfrom(sock, rxbuf, sizeof(rxbuf), 0,
 `recvfrom()` 会把**发送方的地址**填进 `from`。于是很容易想到一个"聪明"的做法：
 **从收到的包里学习主节点的地址**，这样就再也不怕主节点换 IP 了。
 
-**项目故意不这么做**（[udp_client.h:28-36](../main/udp_client.h#L28-L36)）：
+**项目故意不这么做**（[udp_client.h](../main/udp_client.h)）：
 
 > 那样等于让热点里**任何一台设备**，只要往本机 8087 端口丢一包，
 > 就能把自己变成"主节点"。
@@ -392,7 +390,7 @@ STA = **Station**，也就是"客户端模式"：**ESP8266 去连别人的热点
 ### 4.1 初始化顺序
 
 顺序是死的，每一行的理由都不一样（全部在
-[wifi_sta.c:485-562](../main/wifi_sta.c#L485-562)）：
+[`wifi_sta.c` 里的 `wifi_sta_init()`](../main/wifi_sta.c)）：
 
 | # | 调用 | 为什么在这个位置 |
 | --- | --- | --- |
@@ -408,7 +406,7 @@ STA = **Station**，也就是"客户端模式"：**ESP8266 去连别人的热点
 
 **⑥ ⑦ ⑧ ⑨ 的顺序值得单独说**：`esp_wifi_start()` 会触发
 `WIFI_EVENT_STA_START` 事件，而**连接动作是在那个事件的处理函数里发起的**
-（[wifi_sta.c:323-327](../main/wifi_sta.c#L323-327)）：
+（[`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c)）：
 
 ```c
 if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -426,8 +424,8 @@ if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
 
 #### ⑤ 那句冗余的 `esp_wifi_set_ps()`
 
-[wifi_sta.c:526-535](../main/wifi_sta.c#L526-535) 把它标成了"冗余"，
-依据是 `esp_wifi.h:413` 的原文：
+[`wifi_sta.c` 里的 `wifi_sta_init()`](../main/wifi_sta.c) 把它标成了"冗余"，
+依据是 `esp_wifi.h 里的 esp_wifi_set_ps()` 的原文：
 
 ```text
 @attention Default power save type is WIFI_PS_NONE.
@@ -445,7 +443,7 @@ if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
 #### ⑧ 灌进去的 `wifi_config_t`
 
 `esp_wifi_set_config()` 收的是一个结构体，两个地方必须小心
-（[wifi_sta.c:292-297](../main/wifi_sta.c#L292-297)）：
+（[`wifi_sta.c` 里的 `apply_credentials()`](../main/wifi_sta.c)）：
 
 ```c
 wifi_config_t cfg;
@@ -484,21 +482,21 @@ C 标准专门允许用字符串字面量**初始化**字符数组
 #### 谁记得住 `ssid` / `password` 的字节数上限？
 
 `wifi_config_t` 里的 `ssid[32]` / `password[64]` 是 **802.11 协议**规定的上限
-（`SSID_MAX_LEN` / `PASS_MAX_LEN`，[wifi_sta.c:83-86](../main/wifi_sta.c#L83-86)）。
+（`SSID_MAX_LEN` / `PASS_MAX_LEN`，[wifi_sta.c](../main/wifi_sta.c)）。
 注意**单位为字节**，不是字符 —— 一个中文 SSID 一个字 3 字节。
 
-> ⚠️ 长度**必须在存进 NVS 之前**检查（[wifi_sta.c:586-587](../main/wifi_sta.c#L586-587)）：
+> ⚠️ 长度**必须在存进 NVS 之前**检查（[`wifi_sta.c` 里的 `wifi_sta_set_credentials()`](../main/wifi_sta.c)）：
 > 超长的 SSID 被截断后照样能写进 NVS，但永远连不上 ——
 > 那种"命令说成功了、就是连不上"的毛病最难查。
 
 #### 接口名的新旧写法
 
 代码里写的是 `esp_wifi_set_config(ESP_IF_WIFI_STA, &cfg)`
-（[wifi_sta.c:297](../main/wifi_sta.c#L297)）。
+（[`wifi_sta.c` 里的 `apply_credentials()`](../main/wifi_sta.c)）。
 你在别的文档里会看到 `WIFI_IF_STA` —— 两者**是同一个东西**：
 
 ```c
-/* components/esp8266/include/esp_wifi_types.h:40 */
+/* esp_wifi_types.h */
 #define WIFI_IF_STA ESP_IF_WIFI_STA
 ```
 
@@ -522,7 +520,7 @@ esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP, &wifi_event_handler,
 | `&wifi_event_handler` | 事件来了调谁 |
 | `NULL` | 传给回调的自定义参数（本模块用不上） |
 
-回调签名是固定的，四个参数（[wifi_sta.c:320-321](../main/wifi_sta.c#L320-321)）：
+回调签名是固定的，四个参数（[`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c)）：
 
 ```c
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -541,37 +539,37 @@ wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)event_data;
 **不在你自己的任务里**，在系统的事件循环任务上。这个任务的参数是写死的：
 
 ```c
-/* components/esp_event/default_event_loop.c:77-85 */
+/* default_event_loop.c 里的 esp_event_loop_create_default() */
 esp_event_loop_args_t loop_args = {
-    .queue_size = CONFIG_ESP_SYSTEM_EVENT_QUEUE_SIZE,   /* sdkconfig:149 = 32 */
+    .queue_size = CONFIG_ESP_SYSTEM_EVENT_QUEUE_SIZE,   /* CONFIG_ESP_SYSTEM_EVENT_QUEUE_SIZE = 32 */
     .task_name = "sys_evt",
-    .task_stack_size = ESP_TASKD_EVENT_STACK,           /* 2048 + 余量（sdkconfig:150） */
+    .task_stack_size = ESP_TASKD_EVENT_STACK,           /* 2048 + 余量（CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE） */
     .task_priority = ESP_TASKD_EVENT_PRIO,
     .task_core_id = 0
 };
 ```
 
-算一下优先级：`ESP_TASK_PRIO_MAX - 5`（`esp_task.h:40`），而
-`ESP_TASK_PRIO_MAX = configMAX_PRIORITIES = 15`（`esp_task.h:32`、
-`FreeRTOSConfig.h:60`）——**`sys_evt` 的优先级是 10**。
+算一下优先级：`ESP_TASK_PRIO_MAX - 5`（`esp_task.h` 里的 `ESP_TASKD_EVENT_PRIO` 宏），而
+`ESP_TASK_PRIO_MAX = configMAX_PRIORITIES = 15`（`esp_task.h`、
+`FreeRTOSConfig.h`）——**`sys_evt` 的优先级是 10**。
 
 对比一下项目里自己起的任务：
 
 | 任务 | 优先级 | 来源 |
 | --- | --- | --- |
 | `sys_evt`（跑事件回调） | **10** | SDK 内部 |
-| `tcp_client` / `udp_client` | 5 | [tcp_client.c:232](../main/tcp_client.c#L232) / [udp_client.c:275](../main/udp_client.c#L275) |
-| `wifi_mgr`（状态上报） | 4 | [wifi_sta.c:556](../main/wifi_sta.c#L556) |
+| `tcp_client` / `udp_client` | 5 | [`tcp_client.c` 里的 `tcp_client_start()`](../main/tcp_client.c) / [`udp_client.c` 里的 `udp_client_start()`](../main/udp_client.c) |
+| `wifi_mgr`（状态上报） | 4 | [`wifi_sta.c` 里的 `wifi_sta_init()`](../main/wifi_sta.c) |
 
 **事件回调跑在优先级 10 的任务上，比传输任务高一倍。** 这就是为什么
-[wifi_sta.c:310-312](../main/wifi_sta.c#L310-312) 那条警告这么重：
+[`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c) 那条警告这么重：
 
 > 绝对不能在这里做阻塞操作（比如 `vTaskDelay`），否则整个 WiFi 状态机都会停摆。
 
 一个优先级 10 的任务睡 1 秒，优先级 5 的传输任务才轮得上 —— 而且**在事件回调里
 阻塞，等于把整个事件循环堵住**：所有 WiFi 状态变化、所有 IP 事件都会排在后面没人处理。
 
-所以"重连"这件事在项目里的写法是（[wifi_sta.c:341-344](../main/wifi_sta.c#L341-344)）：
+所以"重连"这件事在项目里的写法是（[`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c)）：
 
 ```c
 /* 直接重连、不在这里 sleep：esp_wifi_connect() 内部要先扫一遍信道、
@@ -580,7 +578,7 @@ esp_wifi_connect();
 ```
 
 **"等一会儿"这个活儿本身是阻塞的，所以它必须挪到别的地方去** ——
-这就是 `wifi_mgr_task` 存在的唯一理由（[wifi_sta.c:420-423](../main/wifi_sta.c#L420-423)）。
+这就是 `wifi_mgr_task` 存在的唯一理由（[`wifi_sta.c` 里的 `wifi_mgr_task()`](../main/wifi_sta.c)）。
 
 ### 4.3 事件位：回调和任务之间怎么传话
 
@@ -588,22 +586,22 @@ esp_wifi_connect();
 **事件组**（EventGroup）：
 
 ```c
-static EventGroupHandle_t s_wifi_event_group;   /* wifi_sta.c:128 */
-#define WIFI_GOT_IP_BIT   BIT0                   /* :125 */
-#define WIFI_DOWN_BIT     BIT1                   /* :130 */
+static EventGroupHandle_t s_wifi_event_group;
+#define WIFI_GOT_IP_BIT   BIT0
+#define WIFI_DOWN_BIT     BIT1
 ```
 
 | 谁 | 干什么 | 位置 |
 | --- | --- | --- |
-| 回调（`sys_evt` 任务） | 拿到 IP → `SetBits(GOT_IP)` | [wifi_sta.c:361](../main/wifi_sta.c#L361) |
-| 回调（`sys_evt` 任务） | 断开 → `ClearBits(GOT_IP)` + `SetBits(DOWN)` | [wifi_sta.c:336-337](../main/wifi_sta.c#L336-337) |
-| 传输任务 | `xEventGroupWaitBits(GOT_IP, 无限等)` | [wifi_sta.c:571-574](../main/wifi_sta.c#L571-574) |
-| `wifi_mgr` | 等到 `DOWN` 或被超时唤醒 | [wifi_sta.c:435-473](../main/wifi_sta.c#L435-473) |
+| 回调（`sys_evt` 任务） | 拿到 IP → `SetBits(GOT_IP)` | [`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c) |
+| 回调（`sys_evt` 任务） | 断开 → `ClearBits(GOT_IP)` + `SetBits(DOWN)` | [`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c) |
+| 传输任务 | `xEventGroupWaitBits(GOT_IP, 无限等)` | [`wifi_sta.c` 里的 `wifi_sta_wait_ip()`](../main/wifi_sta.c) |
+| `wifi_mgr` | 等到 `DOWN` 或被超时唤醒 | [`wifi_sta.c` 里的 `wifi_mgr_task()`](../main/wifi_sta.c) |
 
 两个容易写错的地方，代码里都标了：
 
 **① `wifi_sta_wait_ip()` 用的是 `pdFALSE` —— 不清除事件位**
-（[wifi_sta.c:572](../main/wifi_sta.c#L572)）：
+（[wifi_sta.c](../main/wifi_sta.c)）：
 
 ```c
 EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
@@ -616,7 +614,7 @@ EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
 后面的永远等不到。
 
 **② `wifi_mgr_task` 里两个 `xEventGroupWaitBits` 的 `pdFALSE` 含义不同**
-（[wifi_sta.c:443-447](../main/wifi_sta.c#L443-447)）：
+（[`wifi_sta.c` 里的 `wifi_mgr_task()`](../main/wifi_sta.c)）：
 
 ```c
 if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
@@ -633,7 +631,7 @@ if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
 
 ### 4.4 "关联上" ≠ "连上了"
 
-这是 STA 模式里最重要的一个区分，项目在 [wifi_sta.c:346-348](../main/wifi_sta.c#L346-348)
+这是 STA 模式里最重要的一个区分，项目在 [`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c)
 专门标了出来：
 
 | 事件 | 含义 | 此时能通信吗 |
@@ -645,15 +643,15 @@ if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
 
 - **"真的连上了"的标志是 `GOT_IP`**，不是 `CONNECTED`
 - `tcp_client` / `udp_client` 一进去就卡在 `wifi_sta_wait_ip()` 上
-  （[tcp_client.c:123-127](../main/tcp_client.c#L123-L127)）：
+  （[`tcp_client.c` 里的 `tcp_client_task()`](../main/tcp_client.c)）：
   **没有 IP 的时候 `connect()` 必然失败，与其盲目重试，不如在这里阻塞等待**
 - 项目**根本没注册** `WIFI_EVENT_STA_CONNECTED` —— 它只关心"能通信了没"
 
 ### 4.5 断开原因码 `reason`
 
 断开事件带着一个 802.11 的原因码，这是查"连不上"的第一手证据
-（[wifi_sta.c:331-334](../main/wifi_sta.c#L331-334)）。
-SDK 把这些码定义成了枚举，在 `components/esp8266/include/esp_wifi_types.h:70-101`：
+（[`wifi_sta.c` 里的 `wifi_event_handler()`](../main/wifi_sta.c)）。
+SDK 把这些码定义成了枚举，在 `esp_wifi_types.h` 里的 `wifi_err_reason_t`：
 
 | reason | 宏 | 实际含义 | 去查什么 |
 | --- | --- | --- | --- |
@@ -672,7 +670,7 @@ SDK 把这些码定义成了枚举，在 `components/esp8266/include/esp_wifi_ty
 >
 > **ESP8266 只支持 2.4GHz。** 热点开在 5GHz 上芯片根本扫不到，
 > 现象和"SSID 写错"**一模一样**，都是 reason=201
-> （[wifi_sta.c:47-48](../main/wifi_sta.c#L47-48)）。
+> （[`wifi_sta.c` 里的 `WIFI_SSID_DEFAULT` 宏](../main/wifi_sta.c)）。
 
 ### 4.6 换热点的两个 API
 
@@ -681,11 +679,11 @@ esp_wifi_set_config(ESP_IF_WIFI_STA, &cfg);   /* 改配置 */
 esp_wifi_disconnect();                        /* 断开 → 触发 DISCONNECTED 事件 */
 ```
 
-顺序**不能反**（[wifi_sta.c:610](../main/wifi_sta.c#L610)）：
+顺序**不能反**（[`wifi_sta.c` 里的 `wifi_sta_set_credentials()`](../main/wifi_sta.c)）：
 先改配置，再断开重连。反过来的话，断开事件里那个 `esp_wifi_connect()`
 会用**旧配置**去连，然后你会看到"命令说成功了，就是连不上"。
 
-还有一处讲究（[wifi_sta.c:613-620](../main/wifi_sta.c#L613-620)）：
+还有一处讲究（[`wifi_sta.c` 里的 `wifi_sta_set_credentials()`](../main/wifi_sta.c)）：
 
 ```c
 if (esp_wifi_disconnect() != ESP_OK) {
@@ -773,7 +771,7 @@ tcp_client.c / udp_client.c  ──调用──▶  wifi_sta_wait_ip()   （等�
 传输层要么得 `#include "cmd.h"` 反向依赖（那就成了面条），
 要么得知道"开灯"是什么（那就不是纯传输层了）。
 
-注册这个动作在 `app_main()` 里（[main.c:100-101](../main/main.c#L100-101)）：
+注册这个动作在 `app_main()` 里（[main.c](../main/main.c)）：
 
 ```c
 /* ③ 注册回调 —— 必须在 link_init() 之前：后者会立刻把链路启动起来，
@@ -786,17 +784,17 @@ udp_client_set_rx_handler(cmd_on_udp_rx);
 
 ⚠️ **顺序是有约束的**：`set_rx_handler()` 必须在 `start()` **之前**。
 反过来的话，任务已经开始收了，而回调还是 `NULL` —— 那段时间的数据
-会被静默丢弃（看看 [tcp_client.c:192-194](../main/tcp_client.c#L192-L194)：
+会被静默丢弃（看看 [`tcp_client.c` 里的 `tcp_client_task()`](../main/tcp_client.c)：
 `if (s_rx_handler != NULL)`，是 NULL 就什么都不做，**连日志都不打**）。
 
 > 这是一个**接口契约**，不是能靠代码强制的约束。两个模块的头文件里都写了
-> "必须在 start() 之前调用"（[tcp_client.h:57-59](../main/tcp_client.h#L57-L59)），
+> "必须在 start() 之前调用"（[`tcp_client.h` 里的 `tcp_client_set_rx_handler()`](../main/tcp_client.h)），
 > 但编译器不会帮你检查 —— 遵守它靠的是读注释。
 
 ### 5.3 四条任务
 
 `app_main()` 本身不是任务的主体，它只是**把线接起来**
-（[main.c:81-119](../main/main.c#L81-119)），接完就进一个空的死循环
+（[main.c](../main/main.c)），接完就进一个空的死循环
 （`while(1) vTaskDelay(1000)`）保持存活。
 
 真正干活的是这四条：
@@ -804,17 +802,17 @@ udp_client_set_rx_handler(cmd_on_udp_rx);
 | 任务 | 优先级 | 谁起的 | 干什么 |
 | --- | --- | --- | --- |
 | `sys_evt` | 10 | SDK 的 `esp_event_loop_create_default()` | 跑 WiFi / IP 事件回调 |
-| `tcp_client` | 5 | [tcp_client.c:232](../main/tcp_client.c#L232) | 连接、收发、断了重连 |
-| `udp_client` | 5 | [udp_client.c:275](../main/udp_client.c#L275) | bind、收发、心跳 |
-| `wifi_mgr` | 4 | [wifi_sta.c:556](../main/wifi_sta.c#L556) | 没连上时每 30 秒吭一声 |
+| `tcp_client` | 5 | [`tcp_client.c` 里的 `tcp_client_start()`](../main/tcp_client.c) | 连接、收发、断了重连 |
+| `udp_client` | 5 | [`udp_client.c` 里的 `udp_client_start()`](../main/udp_client.c) | bind、收发、心跳 |
+| `wifi_mgr` | 4 | [`wifi_sta.c` 里的 `wifi_sta_init()`](../main/wifi_sta.c) | 没连上时每 30 秒吭一声 |
 
 几个设计上的共同点：
 
-**① 传输任务永不退出**（[tcp_client.c:112-114](../main/tcp_client.c#L112-L114)）。
+**① 传输任务永不退出**（[`tcp_client.c` 里的 `tcp_client_task()`](../main/tcp_client.c)）。
 `s_running` 为 false 时它只是**空转**（500ms 一轮），不是退出。
 这样切模式就不用反复创建/删除任务，也不会出现两条任务抢同一个 socket。
 
-**② `start()` 是幂等的**（[tcp_client.c:230-232](../main/tcp_client.c#L230-L232)）：
+**② `start()` 是幂等的**（[`tcp_client.c` 里的 `tcp_client_start()`](../main/tcp_client.c)）：
 
 ```c
 if (!s_task_started) {
@@ -828,7 +826,7 @@ s_running = true;
 所以 `net tcp` / `net udp` 来回切多少次，都不会多出任务来。
 
 **③ UDP 的任务是"懒创建"的**：`app_main()` 里只调 `link_init(LINK_TCP)`
-（[main.c:103-108](../main/main.c#L103-108)），而 `link_init()` 按传进来的参数
+（[main.c](../main/main.c)），而 `link_init()` 按传进来的参数
 **只启动一条** —— 传 `LINK_TCP` 就只起 TCP。UDP 那条任务要等到第一次
 `net udp` 才会被创建，在那之前一条任务都不多占。
 
@@ -861,7 +859,7 @@ tcp_client_task → recv() → s_rx_handler()  → cmd_on_tcp_rx()
 
 > 等任务退出 = 等自己退出 = **死锁**。
 
-于是 `stop()` 只能这样写（[tcp_client.c:237-241](../main/tcp_client.c#L237-L241)）：
+于是 `stop()` 只能这样写（[`tcp_client.c` 里的 `tcp_client_stop()`](../main/tcp_client.c)）：
 
 ```c
 void tcp_client_stop(void)
@@ -890,7 +888,7 @@ int link_send(const char *data, int len)
 }
 ```
 
-[link.h:58-61](../main/link.h#L58-L61) 的注释说得很清楚：
+[`link.h` 里的 `link_send()`](../main/link.h) 的注释说得很清楚：
 **所有回执一律调它，不再直接调 `tcp_client_send()`。**
 漏掉哪一处，那条回执在 UDP 模式下就会往 TCP 发 —— 命令从 UDP 进来了，
 回复却跑去了另一条路，发送方会觉得"命令生效了但没回音"。
@@ -908,7 +906,7 @@ static void cmd_on_rx_from(link_mode_t src, const char *data, int len)
 }
 ```
 
-[cmd.c:395-398](../main/cmd.c#L395-L398)：因为 `stop()` 只是置标志，
+[`cmd.c` 里的 `cmd_on_rx_from()`](../main/cmd.c)：因为 `stop()` 只是置标志，
 旧链路最多还能收 5 秒。**不管它的话**，切走之后发过来的命令照样会被执行，
 而回执走的是新链路 —— 发送方会觉得"我明明切走了，怎么还被遥控"。
 
@@ -924,14 +922,14 @@ link_send(mode == LINK_UDP ? "NET -> UDP\r\n" : "NET -> TCP\r\n");
 s_link = mode;
 ```
 
-[link.h:73-76](../main/link.h#L73-L76)：**反过来的话，这条回执会走新链路，
+[`link.h` 里的 `link_switch()`](../main/link.h)：**反过来的话，这条回执会走新链路，
 而发命令的人正在旧链路上等着看结果 —— 永远等不到。**
 现象就是"发了 `net udp` 之后就再没动静了"，很容易误判成板子死了。
 
 #### 第三道：换链路时把命令缓冲区整个清空
 
 这一道挡的不是"旧链路的包"，而是**跨链路拼出来的命令**
-（[cmd.c:313-323](../main/cmd.c#L313-L323)）：
+（[`cmd.c` 里的 `cmd_try_one()`](../main/cmd.c)）：
 
 ```text
 旧链路上来了个 "开"   →  缓冲区里躺着 "开"，还没拼成完整命令
@@ -949,7 +947,7 @@ s_link = mode;
 
 #### 附：带参数的 `"wifi "` 命令为什么必须等到整行
 
-`cmd_do_wifi()` 的返回值和别的动作**不一样**（[cmd.c:156-159](../main/cmd.c#L156-L159)）：
+`cmd_do_wifi()` 的返回值和别的动作**不一样**（[cmd.c](../main/cmd.c)）：
 
 | 返回 | 含义 |
 | --- | --- |
@@ -962,7 +960,7 @@ s_link = mode;
 
 > 这里还有个容易忽略的规矩：如果 `"wifi "` 靠前但**整行还没到齐**，
 > 必须原样返回 `false` 继续等，**不能退回去执行表里那条**
-> —— 那等于把后面的命令提前执行了（[cmd.c:262-264](../main/cmd.c#L262-L264)）。
+> —— 那等于把后面的命令提前执行了（[`cmd.c` 里的 `cmd_try_one()`](../main/cmd.c)）。
 
 ---
 
@@ -971,7 +969,7 @@ s_link = mode;
 ### 6.1 `strncpy()` 不保证结尾有 `'\0'`
 
 `wifi_sta.c` 里自己写了一个 `copy_str()` 而不用 `strncpy()`
-（[wifi_sta.c:155-163](../main/wifi_sta.c#L155-163)）：
+（[wifi_sta.c](../main/wifi_sta.c)）：
 
 ```c
 static void copy_str(char *dst, size_t dst_size, const char *src)
@@ -995,7 +993,7 @@ static void copy_str(char *dst, size_t dst_size, const char *src)
 
 ### 6.2 打印字节时 `char` 必须转 `unsigned char`
 
-`cmd.c` 的 `dump_hex()` 里（[cmd.c:338-352](../main/cmd.c#L338-L352)）：
+`cmd.c` 的 `dump_hex()` 里（[cmd.c](../main/cmd.c)）：
 
 ```c
 printf(" %02X", (unsigned char)data[i]);

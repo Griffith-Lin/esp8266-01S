@@ -2,7 +2,8 @@
 
 > 环境：ESP-01S（**1MB** flash）· ESP8266_RTOS_SDK v3.4（`v3.4-115-g858c7c2e`）· 本项目命名空间 `app_cfg`
 >
-> SDK 的结论都回查了源码，文中标 `文件:行号`；项目的用法标 `main/xxx.c:行号`。
+> SDK 的结论都回查了源码，文中标到 `文件 + 函数/宏名`（行号会随代码改动腐烂，符号名不会）；
+> 项目自己的用法直接给文件名。
 >
 > ⚠️ **§3.3 推翻了项目里现有的一条注释。** 不是补充，是那条注释写错了。
 > 如果只读一节，读那一节。
@@ -36,16 +37,16 @@
 
 不是"什么都当字节存"。可用的类型：整数（u8/u16/u32/u64）、字符串、blob。
 存和取用的函数必须是同一类，**类型对不上会直接报错**，不会帮你转换
-（`nvs.h:397-399`：*the requested variable type doesn't match the type which was
+（`nvs.h` 里的 `nvs_get_str()`：*the requested variable type doesn't match the type which was
 used when setting a value, an error is returned*）。
 
 ### 名字有长度上限
 
 ```c
-#define NVS_KEY_NAME_MAX_SIZE   16   /* 含结尾的 '\0' */   /* nvs.h:69 */
+#define NVS_KEY_NAME_MAX_SIZE   16   /* 含结尾的 '\0' */   /* nvs.h */
 ```
 
-所以**命名空间名和键名都最多 15 个字符**（`nvs.h:126`、`:181`）。
+所以**命名空间名和键名都最多 15 个字符**（`nvs.h` 里的 `nvs_open()`，以及 `nvs_set_i8()` 等函数的 `key` 参数说明）。
 
 > 头文件的原话是 "characters"，但**底层卡的是字节数**：限制来自一个定长的
 > `char` 数组，比较用的是 `strlen()` / `strncmp()`，都是字节。
@@ -58,22 +59,22 @@ used when setting a value, an error is returned*）。
 **① 写：明确拒绝，报 `ESP_ERR_NVS_KEY_TOO_LONG`。**
 
 ```c
-/* components/nvs_flash/src/nvs_page.cpp:198-201 */
+/* components/nvs_flash/src/nvs_page.cpp 里 `Page::writeItem()` */
 const size_t keySize = strlen(key);          // strlen 数的是字节
 if (keySize > Item::MAX_KEY_LENGTH) {
     return ESP_ERR_NVS_KEY_TOO_LONG;
 }
 ```
 
-`Item::MAX_KEY_LENGTH` 就是 `sizeof(key) - 1`（`nvs_types.hpp:79`），而 `key` 是
-`char key[NVS_KEY_NAME_MAX_SIZE]`（`nvs_types.hpp:60`）——16 个 char，所以是
+`Item::MAX_KEY_LENGTH` 就是 `sizeof(key) - 1`（`nvs_types.hpp`），而 `key` 是
+`char key[NVS_KEY_NAME_MAX_SIZE]`（`nvs_types.hpp`）——16 个 char，所以是
 **15 字节**，不是什么抽象的"字符数"。
 
-> ⚠️ 报的**不是**头文件里写的那个错误码。`nvs.h:188` 等处列的返回值是
+> ⚠️ 报的**不是**头文件里写的那个错误码。`nvs.h` 里那些 `nvs_set_*()` 的 `@return` 列表写的是
 > `ESP_ERR_NVS_INVALID_NAME`（"key name doesn't satisfy constraints"），
 > 但在整个 `nvs_flash` 组件里搜这个宏，命中的**全部是头文件的 `@return`
 > 注释**（`nvs.h`、`nvs_handle.hpp`），没有任何一行代码 return 它 ——
-> **这个 SDK 实际给的是 `ESP_ERR_NVS_KEY_TOO_LONG`（`nvs.h:46`）**。
+> **这个 SDK 实际给的是 `ESP_ERR_NVS_KEY_TOO_LONG`（`nvs.h`）**。
 > 写错误处理时按实际返回的来，别照抄头文件注释。
 
 **② 读：没有任何长度检查，超长的键会被静默截断成前 15 字节。**
@@ -82,12 +83,12 @@ if (keySize > Item::MAX_KEY_LENGTH) {
 被收进那个 16 字节数组时截断的：
 
 ```c
-/* components/nvs_flash/src/nvs_types.hpp:91-92 */
+/* components/nvs_flash/src/nvs_types.hpp 里的 Item::Item() */
 strncpy(key, key_, sizeof(key) - 1);   // 第 16 个字节起，直接丢掉
 key[sizeof(key) - 1] = 0;
 ```
 
-比较也是定长 15 字节（`nvs_page.cpp:876`）：
+比较也是定长 15 字节（`nvs_page.cpp` 里的 `Page::findItem()`）：
 
 ```c
 if (key != nullptr && strncmp(key, item.key, Item::MAX_KEY_LENGTH) != 0) { ... }
@@ -125,7 +126,7 @@ if (key != nullptr && strncmp(key, item.key, Item::MAX_KEY_LENGTH) != 0) { ... }
 
 ### 谁在管这块分区
 
-`nvs_flash_init()`。它在 `wifi_sta_init()` 里被调用（`main/wifi_sta.c:497-503`），
+`nvs_flash_init()`。它在 `wifi_sta_init()` 里被调用（`wifi_sta.c`），
 而且**必须在 `esp_wifi_init()` 之前** —— WiFi 驱动要把校准数据写进 NVS，
 NVS 没挂上，驱动直接启动失败。
 
@@ -148,15 +149,15 @@ NVS 没挂上，驱动直接启动失败。
 
 | 时机 | API | 声明在哪 | 干什么 |
 | --- | --- | --- | --- |
-| 用之前（一次） | `nvs_flash_init()` | `nvs_flash.h:65` | 挂载默认分区（标签 `"nvs"`） |
-| 用之前 | `nvs_open(ns, 模式, &句柄)` | `nvs.h:126` | 拿到一个句柄 |
-| 读 | `nvs_get_str(h, key, buf, &len)` | `nvs.h:448` | 读字符串 |
+| 用之前（一次） | `nvs_flash_init()` | `nvs_flash.h` | 挂载默认分区（标签 `"nvs"`） |
+| 用之前 | `nvs_open(ns, 模式, &句柄)` | `nvs.h` 里的 `nvs_open()` | 拿到一个句柄 |
+| 读 | `nvs_get_str(h, key, buf, &len)` | `nvs.h` 里的 `nvs_get_str()` | 读字符串 |
 | 读 | `nvs_get_u8/16/32/64(h, key, &值)` | `nvs.h` | 读整数 |
-| 写 | `nvs_set_str(h, key, 值)` | `nvs_api.cpp:399` | 写字符串 |
+| 写 | `nvs_set_str(h, key, 值)` | `nvs_api.cpp` 里的 `nvs_set_str()` | 写字符串 |
 | 写 | `nvs_set_u8/16/32/64(h, key, 值)` | `nvs_api.cpp` | 写整数 |
-| "落盘" | `nvs_commit(h)` | `nvs_api.cpp:387` | ⚠️ **见 §3.3，在这个版本上是空操作** |
+| "落盘" | `nvs_commit(h)` | `nvs_api.cpp` 里的 `nvs_commit()` | ⚠️ **见 §3.3，在这个版本上是空操作** |
 | 收尾 | `nvs_close(h)` | `nvs_api.cpp` | 把句柄从 NVS 的句柄表里摘掉 |
-| 擦除 | `nvs_flash_erase()` | `nvs_flash.h:134` | 擦掉整个 nvs 分区 |
+| 擦除 | `nvs_flash_erase()` | `nvs_flash.h` | 擦掉整个 nvs 分区 |
 
 **顺序是死的**：`init` → `open` → `get`/`set` → `close`。
 
@@ -208,17 +209,17 @@ err = nvs_commit(h);
 **这句话在 v3.4 上不成立。** 追一遍源码：
 
 ```text
-nvs_set_str()                          nvs_api.cpp:399-409
+nvs_set_str()                          nvs_api.cpp
     └─ handle->set_string(key, value)  nvs_handle_simple.cpp
          └─ mStoragePtr->writeItem(...) ← 【当场写进 flash，没有中间缓存】
 
-nvs_commit()                           nvs_api.cpp:387-397
-    └─ handle->commit()                nvs_handle_simple.cpp:92-97
+nvs_commit()                           nvs_api.cpp
+    └─ handle->commit()                nvs_handle_simple.cpp 里的 NVSHandleSimple::commit()
          └─ if (!valid) return ERR;
             return ESP_OK;              ← 【只检查句柄有效性，什么都不写】
 ```
 
-而且 SDK 自己在 `nvs_commit()` 里写了注释（`nvs_api.cpp:390`）：
+而且 SDK 自己在 `nvs_commit()` 里写了注释（`nvs_api.cpp`）：
 
 ```c
 // no-op for now, to be used when intermediate cache is added
@@ -240,7 +241,7 @@ nvs_commit()                           nvs_api.cpp:387-397
 2. **删掉它，将来没人知道这里曾经需要它。** 留着一句空操作，配合一句
    说清"为什么留着"的注释，比删掉更安全。
 
-按这两条改完之后，代码里现在的样子是（`main/wifi_sta.c:253-256`）：
+按这两条改完之后，代码里现在的样子是（`wifi_sta.c` 里的 `nvs_save_credentials()`）：
 
 ```c
 /* 这一句在本 SDK（v3.4）上是空操作 —— set 已经当场落盘了。
@@ -261,7 +262,7 @@ err = nvs_commit(h);
 
 #### 坑一：`length` 是"传入缓冲区大小，传出实际长度"
 
-`nvs_api.cpp:493-504` 里三种走法：
+`nvs_api.cpp` 里的 `nvs_get_str_or_blob()` 里三种走法：
 
 ```text
 进来时     = 我这边能放多少字节
@@ -280,7 +281,7 @@ err = nvs_commit(h);
 
 #### 坑二：出错时 `out_value` 不被修改
 
-`nvs.h:401` 的原文：
+`nvs.h` 里的 `nvs_get_str()` 的原文：
 
 ```text
 In case of any error, out_value is not modified.
@@ -292,7 +293,7 @@ In case of any error, out_value is not modified.
 
 #### 坑三：只读打开 / 读写打开的差别不只是"能不能写"
 
-`nvs_open()` 的第二个参数会一直传到底（`nvs_partition_manager.cpp:200`）：
+`nvs_open()` 的第二个参数会一直传到底（`nvs_partition_manager.cpp` 里的 `NVSPartitionManager::open_handle()`）：
 
 ```c
 sHandle->createOrOpenNamespace(ns_name, open_mode == NVS_READWRITE, nsIndex);
@@ -300,9 +301,9 @@ sHandle->createOrOpenNamespace(ns_name, open_mode == NVS_READWRITE, nsIndex);
 ```
 
 - **`NVS_READONLY`** → `canCreate = false` → 命名空间不存在就直接返回
-  `ESP_ERR_NVS_NOT_FOUND`（`nvs_storage.cpp:407-409`）
+  `ESP_ERR_NVS_NOT_FOUND`（`nvs_storage.cpp` 里的 `Storage::createOrOpenNamespace()`）
 - **`NVS_READWRITE`** → `canCreate = true` → **顺手把命名空间建出来，并写进
-  flash**（`nvs_storage.cpp:427` 的 `writeItem(Page::NS_INDEX, ...)`）
+  flash**（`nvs_storage.cpp` 里的 `Storage::createOrOpenNamespace()` 的 `writeItem(Page::NS_INDEX, ...)`）
 
 所以下面这件事值得记住：**一个纯读的函数，如果用 READWRITE 打开，它就有了
 写副作用。** 第一次上电时，它会在 flash 里留下一个空命名空间 —— 而且
@@ -337,7 +338,7 @@ sHandle->createOrOpenNamespace(ns_name, open_mode == NVS_READWRITE, nsIndex);
 
 ### 理由三：它能和"出厂默认值"叠成三层
 
-这是本项目实际用的结构（`main/wifi_sta.h:26-33` 的注释）：
+这是本项目实际用的结构（`wifi_sta.h` 的注释）：
 
 | 优先级 | 来源 | 什么时候生效 |
 | --- | --- | --- |
@@ -402,7 +403,7 @@ it is NOT how you change WiFi credentials.
 | 单个键 | `nvs_erase_key(h, key)` | 那一个键 | 其它键 |
 
 > ⚠️ **前两行（esptool 那两条）都需要先把 stub 传进芯片。**
-> 它们在源码里都挂着 `@stub_function_only`（`esptool.py:652` 和 `:658`）——
+> 它们在源码里都挂着 `@stub_function_only`（`esptool.py` 里的 `erase_flash()` 和 `erase_region()`）——
 > 也就是**要先成功上传 stub 才能跑**。
 >
 > 这件事在本项目上不是理论：这块板子就在"上传 stub"这一步失败过
@@ -418,7 +419,7 @@ it is NOT how you change WiFi credentials.
 
 ```bash
 make erase_flash                     # make 流程，走的是 $(ESPTOOLPY_SERIAL) erase_flash
-                                     # 定义在 components/esptool_py/Makefile.projbuild:85-87
+                                     # 定义在 components/esptool_py/Makefile.projbuild
 ```
 
 ⚠️ **它擦的是整片**：bootloader、分区表、app、nvs 全没。
@@ -434,7 +435,7 @@ esptool.py --port COM8 --baud 115200 erase_region 0x9000 0x6000
 ```
 
 - 地址和长度来自 `partitions_1mb.csv` 那一行：`nvs, data, nvs, 0x9000, 0x6000`
-- ⚠️ **两个数都必须是 4096 的倍数**（`esptool.py:2686-2687` 的约束），
+- ⚠️ **两个数都必须是 4096 的倍数**（`esptool.py` 里 `erase_region` 子命令声明这两个参数时就写死了），
   `0x9000` 和 `0x6000` 都是
 - 擦完直接复位就行，**app 还在，不用重烧**
 
@@ -442,7 +443,7 @@ esptool.py --port COM8 --baud 115200 erase_region 0x9000 0x6000
 
 ### 5.3 程序内擦
 
-代码里那条路径（`main/wifi_sta.c:497-503`）：
+代码里那条路径（`wifi_sta.c` 里的 `wifi_sta_init()`）：
 
 ```c
 if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -451,7 +452,7 @@ if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
 }
 ```
 
-`nvs_flash_erase()` 的行为（`nvs_flash.h:121-134`）：擦掉整个默认 nvs 分区；
+`nvs_flash_erase()` 的行为（`nvs_flash.h`）：擦掉整个默认 nvs 分区；
 **如果分区已经初始化过，它会先自动 de-init**，擦完需要重新 `init` 才能再用。
 
 顺带一句：这条路径本身就是一个**"恢复出厂设置"**的办法 —— 走完之后节点会退回
@@ -462,7 +463,7 @@ if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
 记得 §2 那张表：24KB 里住着两家人。
 
 所以擦完之后，**WiFi 驱动的校准数据也没了**。这不是问题 —— 下次
-`esp_wifi_init()` 时驱动会自己重新校准并重写一遍（`main/wifi_sta.c:489-496` 记了这件事）。
+`esp_wifi_init()` 时驱动会自己重新校准并重写一遍（`wifi_sta.c` 里的 `wifi_sta_init()` 记了这件事）。
 
 代价只是"第一次上电慢一点"，不是"坏了"。但如果你不知道这件事，
 看到擦完之后启动变慢会以为搞砸了。
@@ -487,16 +488,16 @@ API 顺序（死的）：
   nvs_flash_init() → nvs_open(ns, 模式, &h) → nvs_get_* / nvs_set_* → nvs_close(h)
   擦除：nvs_flash_erase()（整个分区）/ nvs_erase_key(h, key)（单个键）
 
-★ nvs_commit() 在 v3.4 上是【空操作】（nvs_api.cpp:390 自己写了 no-op for now）
+★ nvs_commit() 在 v3.4 上是【空操作】（nvs_api.cpp 自己写了 no-op for now）
   nvs_set_str() 当场就落盘，没有中间缓存
   → 但这一句【要留着】：ESP-IDF v4+ 真有缓存，漏了就是掉电丢数据
 
 三个语义坑：
   ① nvs_get_str 的 length 是【传入缓冲区大小、传出实际长度】
      → 每次调用前重新赋 sizeof；装不下是【整个失败】，不是截断
-  ② 出错时 out_value 不被修改（nvs.h:401）→ 缓冲区里是旧值，调用方自己处理
+  ② 出错时 out_value 不被修改（nvs.h 里的 nvs_get_str()）→ 缓冲区里是旧值，调用方自己处理
   ③ 只读打开不存在的命名空间 → 直接 NOT_FOUND
-     读写打开 → 顺手把命名空间建出来【并写 flash】（nvs_storage.cpp:427）
+     读写打开 → 顺手把命名空间建出来【并写 flash】（nvs_storage.cpp 里的 Storage::createOrOpenNamespace()）
      ⇒ 纯读的函数用 READWRITE 就有写副作用
 
 为什么写进 NVS：

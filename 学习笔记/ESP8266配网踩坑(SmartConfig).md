@@ -2,7 +2,7 @@
 
 > 环境：ESP-01S（**1MB** flash）· ESP8266_RTOS_SDK v3.4（`v3.4-115-g858c7c2e`）· 手机 ESP-TOUCH App
 >
-> 本笔记里的日志都是**本项目实测抓的**，SDK 结论都回查了源码并在文中标了 `文件:行号`。
+> 本笔记里的日志都是**本项目实测抓的**，SDK 结论都回查了源码并在文中标到了 `文件 + 函数/宏名`。
 >
 > ⚠️ **这份笔记记的是一个【被放弃】的方案。** SmartConfig 已经从工程里拆掉了
 > （见 `ESP8266开发流程.md` §9.7），所以第 2 节那些"怎么用"的坑现在**用不上了** ——
@@ -246,7 +246,7 @@ if (!to_ds || from_ds) return;      /* 只保留"上行单播"，其余全丢 */
 
 改完前两个坑，仍然没有广播帧。回头翻 SDK，发现两条：
 
-**第一条**（`components/esp8266/include/esp_wifi.h:654`）：
+**第一条**（`esp_wifi.h` 里的 `esp_wifi_set_promiscuous_filter()`）：
 
 ```text
   * @note The default filter is to filter all packets except WIFI_PKT_MISC
@@ -261,7 +261,7 @@ if (!to_ds || from_ds) return;      /* 只保留"上行单播"，其余全丢 */
 > **教训**：**别按文档假设过滤器放行了什么 —— 打计数器，看实际收到了什么。**
 > 头文件里的 `@note` 是给人看的，不是给编译器的。
 
-**第二条**（`examples/wifi/sniffer/main/sniffer_main.c:134-138`）：
+**第二条**（`examples/wifi/sniffer/main/sniffer_main.c` 里的 `sniffer_task()`）：
 
 ```c
 #if CONFIG_FILTER_MASK_DATA_FRAME_PAYLOAD
@@ -517,7 +517,7 @@ SSID 和密码可以直接烧进固件，或者设备连上以后用 TCP 推一�
 > **ESP-NOW 的坑提前记一笔**：`examples/wifi/espnow/README.md` 明确写着 ——
 > **如果接收方是 station 模式且连着一个 AP，必须关掉 modem sleep。**
 > 本项目代码里 `esp_wifi_set_ps(WIFI_PS_NONE)` 那一句已经在了，
-> 而且它在 v3.4 上**本来就是默认值**（`esp_wifi.h:413`）——
+> 而且它在 v3.4 上**本来就是默认值**（`esp_wifi.h` 里的 `esp_wifi_set_ps()`）——
 > 所以那句现在是冗余的，**但留着它对 ESP-NOW 是必需的**。
 
 > ⚠ **落选不等于没用。** 哪天要扩展到多个节点、或者要让手机/电脑
@@ -595,8 +595,8 @@ v3.4 四个坑（现在用不上了，但记着它的形状）：
      一个设备出现在 8 个信道上（2 3 4 5 6 7 8 10）—— 物理上不可能
      原因：wifi_event_handler 在 esp_wifi_connect()，SDK 每次扫全 13 信道
   C. 别按文档假设默认行为
-     esp_wifi.h:654 说"默认只放行 WIFI_PKT_MISC"，和实测【对不上】
-     sniffer_main.c:134-138 里 esp_wifi_set_recv_data_frame_payload()
+     esp_wifi.h 里的 esp_wifi_set_promiscuous_filter() 说"默认只放行 WIFI_PKT_MISC"，和实测【对不上】
+     sniffer_main.c 里的 sniffer_task() 里 esp_wifi_set_recv_data_frame_payload()
      是 extern 就地声明的 —— 公共头文件里【根本不存在】
      ⚠ 官方例子里出现 extern，说明这条路没人维护
   → 三个坑的共同点：【探针都不会报错】，它高高兴兴打印一堆像结论的数字
