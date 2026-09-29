@@ -13,7 +13,8 @@ The code in `main/` **is a real application, not a stock example.** It began as 
 example from `$IDF_PATH/examples/get-started/`, but has since grown into a remotely controlled
 relay, split by responsibility: `main.c` (glue and startup only — no business logic), `relay.c`
 (GPIO0 high/low), `cmd.c` (buffer, keyword table, dispatch), `link.c` (which transport is live;
-the single exit for every reply), `wifi_sta.c` (credentials in NVS, reconnect), `tcp_client.c` /
+the single exit for every reply), `wifi_sta.c` (credentials in NVS, reconnect), `ap_prov.c` (the
+AP + web-page fallback for when reconnecting fails; §10), `tcp_client.c` /
 `udp_client.c` (transport only; they know nothing about lights). The notes exist to explain that
 code, so keep prose and code in step when either changes.
 `学习笔记/ESP8266开发流程.md` §9.1 is the short version of that module map.
@@ -36,15 +37,28 @@ this SDK — so four values must match by hand: SSID (`WIFI_SSID_DEFAULT`), pass
 ESP8266 side — there is no ESP-IDF source in this tree to cross-check it against, so read it off the
 ESP32's boot log rather than asserting it.
 
-**There is no provisioning fallback.** SmartConfig used to be `wifi_sta.c`'s answer to "the node
-can't reach its AP": the phone broadcast the credentials in special 802.11 frames and the node
-sniffed them. It was **removed** (see 学习笔记/ESP8266开发流程.md §9.7), because the chain — phone WiFi driver → AP →
-promiscuous mode → the closed-source library — has four links we don't control and fails silently
-when any one of them does. A 60-second air probe measured 17090 frames and **0 broadcast data
-frames** on a busy channel with ~35 beacons/s, which is physically impossible (ARP/DHCP/mDNS/IPv6-ND
-are all multicast), proving the probe was blind on exactly the axis it needed. Do not re-add it.
-The accepted cost: once the node is off the air, the only recovery is reflashing — so the documented
-order is always ① push `wifi <SSID>,<pass>` over TCP, ② then change the master node.
+**Provisioning is AP + web page, never SmartConfig.** When the node has failed to reconnect
+`WIFI_RETRY_BEFORE_AP` times (30, in `wifi_sta.h`), `wifi_sta.c` calls the callback registered by
+`wifi_sta_set_giveup_handler()` — wired in `main.c` to `ap_prov_run()`. `ap_prov.c` stops the
+radio, restarts it as a SoftAP (`ESP-01S-Setup-<MAC last 2 bytes>`, password `12345678`), serves a
+form on `192.168.4.1`, blocks until someone submits, then hands the credentials back and returns the
+radio to STA. Documented in 学习笔记/ESP8266开发流程.md §10.
+
+It deliberately **never calls `esp_restart()`**: `relay.c` pulls GPIO0 low for "off", GPIO0 is the
+UART-download strapping pin (`main.c` and §9.8), so a reset while the relay is off bricks the boot.
+Mode switching in place is the whole reason the flow is shaped this way.
+
+SmartConfig was the previous answer and is **not** to be re-added: the phone broadcast the credentials
+in special 802.11 frames and the node sniffed them. It was **removed** (see 学习笔记/ESP8266开发流程.md §9.7), because the
+chain — phone WiFi driver → AP → promiscuous mode → the closed-source library — has four links we
+don't control and fails silently when any one of them does. A 60-second air probe measured 17090
+frames and **0 broadcast data frames** on a busy channel with ~35 beacons/s, which is physically
+impossible (ARP/DHCP/mDNS/IPv6-ND are all multicast), proving the probe was blind on exactly the axis
+it needed.
+
+AP provisioning still needs someone physically present, so the documented order stands: ① push
+`wifi <SSID>,<pass>` over TCP while the node is still reachable, ② then change the master node.
+Getting it backwards now costs a walk to the device, not a reflash.
 
 An OTA module (`ota.c`/`ota.h`) used to live in `main/`. It was **moved out** to
 `../ota-for-larger-flash/` (a sibling of this repo under `project/`) because it cannot run on a
@@ -53,9 +67,16 @@ and a two-slot partition table. Its directory has its own README with the return
 
 Everything under `学习笔记/` is written in Chinese in an explanatory teaching style — tables,
 blockquotes, "为什么" asides, tree diagrams, word-split mnemonic breakdowns. Match that voice when
-editing. The table of contents at the top of a note is manual; update it when adding or renaming a
-section. `README.md` is the exception: it is a plain project landing page (简介 / 功能特性 /
+editing. `README.md` is the exception: it is a plain project landing page (简介 / 功能特性 /
 技术栈 / 快速开始 / 项目结构 / 待办事项), not teaching prose.
+
+**Notes are edited only on request.** Do not touch anything under `学习笔记/` unless the user asks
+for that specific edit — no syncing them after a code change, no refreshing line-number anchors, no
+"keeping prose and code in step" on your own initiative. The earlier instruction to keep the notes in
+step with the code, and the manual table of contents at the top of each note, are both **withdrawn**
+(2026-09-29): the user asked for the TOCs to be deleted and for the notes to be left alone. Follow
+`main/` and `CLAUDE.md` as the source of truth; the notes are the user's, and they will say when they
+want them updated.
 
 ## The environment is the hard part
 
