@@ -9,6 +9,7 @@
   *   link.c         当前走哪条链路 + 所有回执的出口
   *   cmd.c          收字节 → 拼命令 → 调 relay / link / wifi_sta
   *   wifi_sta.c     连热点、凭据存 NVS、断线重连
+  *   ap_prov.c      连不上时的兜底：开热点 + 网页，让人用手机填新凭据
   *   tcp_client.c   连服务端、收发字节（纯传输，不知道"开灯"是什么）
   *   udp_client.c   不建连接、直接丢数据报（同样纯传输）
   *
@@ -19,12 +20,16 @@
   *   - 能识别的命令        → cmd.c 的 s_cmds 表
   *   - 继电器接哪个脚      → relay.c 顶部的 RELAY_GPIO
   *   - 开机默认走哪条链路  → 本文件 app_main() 里的 link_init()
+  *   - 配网热点的名字/密码 → ap_prov.c 顶部的 AP_SSID_PREFIX / AP_PASSWORD
+  *   - 失败几次转配网      → wifi_sta.h 里的 WIFI_RETRY_BEFORE_AP
   *
-  * @warning 节点一旦连不上，就【没有】远程通道了 —— 只能拆下来重烧。
-  *          所以改主节点凭据的顺序必须是：
-  *              ① 先发命令改从节点（它此时还连得上）
-  *              ② 再改主节点
-  *          反过来做，这块板子就只能插串口线了。
+  * @warning 改主节点凭据的顺序仍然是：① 先发命令改从节点（它此时还连得上）
+  *          ② 再改主节点。反过来做的话，从节点会掉进配网模式 —— 不致命，
+  *          但要跑过去拿手机连它的热点重填一遍。
+  *
+  * @warning 配网兜底不等于"什么都能救"：只有当【凭据填错了】它才有用。
+  *          热点开在 5GHz、板子太远、主节点根本没开机，这些它一样救不了。
+  *          所以"先改从节点、再改主节点"这条纪律没有被省掉。
   *
   * @warning "改配置"和"换固件"是两件事：改 WiFi 密码靠上面那条命令，
   *          换固件只能插串口线（本板 1MB，两个 app 槽放不下，所以没有 OTA）。
@@ -44,6 +49,7 @@
 #include "esp_spi_flash.h"
 
 #include "wifi_sta.h"
+#include "ap_prov.h"
 #include "tcp_client.h"
 #include "udp_client.h"
 #include "relay.h"
@@ -79,8 +85,13 @@ void app_main(void)
     /* ① 硬件先就位：把 GPIO0 配成输出并置成"关"。 */
     relay_init();
 
-    /* ② 联网：连热点、断线重连、打印 IP。异步的，返回时还没连上。 */
+    /* ② 联网：连热点、断线重连、打印 IP。异步的，返回时还没连上。
+
+          紧跟着的这一句是配网兜底：连 30 次都没成，就由 ap_prov.c 顶上来，
+          把自己变成一个热点，等人用手机连上来填新凭据。注册得早晚无所谓 ——
+          真要用到它是几分钟以后的事，不存在"注册晚了第一次没人接"。 */
     wifi_sta_init();
+    wifi_sta_set_giveup_handler(ap_prov_run);
 
     /* ③ 注册回调 —— 必须在 link_init() 之前：后者会立刻把链路启动起来，
           注册晚了第一段到达的数据会因为回调还是 NULL 而被悄悄丢掉。
