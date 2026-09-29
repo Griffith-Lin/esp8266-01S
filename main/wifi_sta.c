@@ -4,12 +4,17 @@
   *
   * 对外接口和调用顺序见 wifi_sta.h。
   *
-  * @warning 改主节点凭据的顺序必须是：① 先发命令改从节点 ② 再改主节点。
-  *          反了就得拆下来重烧 —— 本模块没有任何配网兜底。
+  * @warning 改主节点凭据的顺序仍然是：① 先发命令改从节点 ② 再改主节点。
+  *          配网兜底（下面那条）是用来救这个顺序写反了的，不是用来省掉它的。
+  *
+  * 连不上时的兜底在本文件里只有【一个判断和一次调用】，真正开热点、起网页的事
+  * 全在 ap_prov.c 里 —— 走的是 wifi_sta_set_giveup_handler() 注册进来的回调，
+  * 接线那一步在 main.c。本文件因此既不知道热点名，也不知道有网页这回事。
   *
   * @see     学习笔记/ESP8266-NVS.md（凭据为什么放 NVS、怎么擦除）、
   *          学习笔记/ESP8266-TCP-UDP-WiFi-STA.md §4（STA 的 API 与事件）、
-  *          学习笔记/ESP8266开发流程.md §9.6（换热点的操作纪律）、§9.7（连不上怎么查）
+  *          学习笔记/ESP8266开发流程.md §9.6（换热点的操作纪律）、§9.7（连不上怎么查）、
+  *          §10（连不上的兜底：AP 配网模式）
   */
 
 #include <stdio.h>
@@ -87,6 +92,9 @@
   *
   * @note     重连本身【不靠这个值】—— 收到"断开"事件就直接重连了，不需要定时器。
   *           这个值只控制报平安的频率：不然连不上时日志一片安静，看起来像死机。
+  *
+  * @note     管理任务也是按这个间隔去数"失败够不够 30 次了"，所以改大它会让
+  *           进配网模式更迟一点 —— 但不会漏掉，判断用的是 >=。
   */
 #define WIFI_DOWN_REPORT_MS   30000
 
@@ -121,6 +129,14 @@ static char s_pass[PASS_MAX_LEN + 1];
   *        数字一直涨就是真的在原地打转，该去查 SSID / 密码 / 频段了。
   */
 static int s_retry = 0;
+
+/**
+  * @brief 连不上时该找谁 —— 由 wifi_sta_set_giveup_handler() 注册
+  *
+  * @note  默认是 NULL，也就是"没人管"：那就一直重试、只报平安，退回加这个
+  *        功能之前的行为。本工程里 main.c 会把它接上 ap_prov.c。
+  */
+static wifi_sta_giveup_cb_t s_giveup_handler = NULL;
 
 /* ======================= 小工具 ======================= */
 
@@ -349,16 +365,62 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 /* ======================= 管理任务 ======================= */
 
 /**
+  * @brief    从配网模式回来：存下新凭据、把 WiFi 拉回 STA、开始连
+  *
+  * @param[in] ssid      用户在网页上填的热点名
+  * @param[in] password  同上，密码
+  *
+  * @note     回到 STA 的顺序是照抄 wifi_sta_init() 的：声明模式 → 灌配置 →
+  *           启动。只多了一句 esp_wifi_set_mode()，因为 ap_prov_run() 返回时
+  *           WiFi 是【停着的】、而且模式还是 AP —— 那正是它交班时的约定
+  *           （见 ap_prov.h）。
+  *
+  * @warning 这里【不能】图省事改用 wifi_sta_set_credentials()：那个函数结尾要
+  *          esp_wifi_disconnect()，可此刻 WiFi 根本没启动 —— disconnect 会失败、
+  *          也不会产生任何事件，它补刀的那句 esp_wifi_connect() 同样失败。
+  *          两次调用都白打，而且串口上什么都不说。它前半截存 NVS 的事这里照做。
+  *
+  * @warning 存不进 NVS 就【什么都别做】：这时候切过去连，下次上电又变回旧凭据，
+  *          变成"这次好使、重启就不好使"这种最难查的毛病。
+  *
+  * @warning 这里【不用】ESP_ERROR_CHECK：它失败时会 abort，而 abort 会复位芯片。
+  *          这条路上我们一次都不想复位 —— 继电器正把 GPIO0 拉低，那正是芯片的
+  *          下载模式选择脚。宁可什么都不做，等下一次命令或者重新上电。
+  */
+static void sta_restart_from_prov(const char *ssid, const char *password)
+{
+    if (!nvs_save_credentials(ssid, password)) {
+        printf("[wifi] ✗ 新凭据没存住，维持原样\n");
+        return;
+    }
+
+    copy_str(s_ssid, sizeof(s_ssid), ssid);
+    copy_str(s_pass, sizeof(s_pass), password);
+
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    apply_credentials();
+
+    if (esp_wifi_start() != ESP_OK) {
+        printf("[wifi] ✗ STA 拉不起来，只能重新上电了\n");
+        return;
+    }
+
+    printf("[wifi] 配网结束，改用 \"%s\" 重新连\n", s_ssid);
+}
+
+/**
   * @brief    状态上报任务
   *
   * @param[in] arg  任务参数，本模块没用
   *
-  * @note     这条任务只干一件事：没连上的时候，每隔 WIFI_DOWN_REPORT_MS
-  *           在串口上吭一声，从不退出。
+  * @note     这条任务干两件事：没连上的时候每隔 WIFI_DOWN_REPORT_MS 在串口上
+  *           吭一声；失败够 WIFI_RETRY_BEFORE_AP 次了，就叫配网回调来接手。
+  *           它从不退出。
   *
   * @note     为什么要单独一条任务：因为"等一段时间"本质上是阻塞的，
   *           而事件回调跑在系统的事件循环任务上 —— 在那里阻塞，
-  *           整个 WiFi 状态机就停摆了。
+  *           整个 WiFi 状态机就停摆了。配网那一段要在网页那头等人掏手机，
+  *           更是只能在这条任务里等。
   *
   * @warning  重连本身【不在这里】：收到"断开"事件就直接 esp_wifi_connect() 了。
   *           所以这条任务挂掉不影响重连，只会让日志变哑。
@@ -385,6 +447,29 @@ static void wifi_mgr_task(void *arg)
                                 pdMS_TO_TICKS(WIFI_DOWN_REPORT_MS))
             & WIFI_GOT_IP_BIT) {
             continue;   /* 连上了 */
+        }
+
+        /* 数够了就转配网模式。
+           没注册回调（s_giveup_handler 是 NULL）就往下走 —— 那就成了"没这个
+           功能"，行为和加它之前一模一样。 */
+        if (s_retry >= WIFI_RETRY_BEFORE_AP && s_giveup_handler != NULL) {
+            char ssid[SSID_MAX_LEN + 1];
+            char pass[PASS_MAX_LEN + 1];
+
+            printf("\n[wifi] 已经失败 %d 次了，转配网模式\n", s_retry);
+
+            /* 回调里会开热点、起网页，然后在那头等人来填 —— 一直阻塞到有人
+               提交为止。这是本任务唯一一次长时间不回来，也正是设计如此：
+               它等的那件事，本来就是"有个人拿着手机过来"。 */
+            if (s_giveup_handler(ssid, sizeof(ssid), pass, sizeof(pass))) {
+                sta_restart_from_prov(ssid, pass);
+            }
+
+            /* 不管成没成，计数都从头来 —— 否则下一圈立刻又会判定"数够了"，
+               变成反复开热点关热点。配网失败时这一步顺带就是一次退避：
+               回到 STA 再试 30 次，几分钟后才轮到下一次开热点。 */
+            s_retry = 0;
+            continue;
         }
 
         printf("[wifi] 还没连上 \"%s\"：已失败 %d 次，仍在重试\n", s_ssid, s_retry);
@@ -464,8 +549,11 @@ void wifi_sta_init(void)
     apply_credentials();
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    /* 起管理任务。栈 4KB：它只做 printf 和等事件，不干重活。 */
-    if (xTaskCreate(wifi_mgr_task, "wifi_mgr", 4096, NULL, 4, NULL) != pdPASS) {
+    /* 起管理任务。栈给到 6KB —— 比"只做 printf"那会儿大了一半：它现在还要
+       跑配网那一段（切模式、起热点、起 HTTP 服务），那些函数各有各的调用深度，
+       而且要在这一条栈上摆开一个 wifi_config_t 和一个 httpd_config_t。
+       栈给少了的表现是随机崩，而且常常崩在别的任务里，非常难查。 */
+    if (xTaskCreate(wifi_mgr_task, "wifi_mgr", 6144, NULL, 4, NULL) != pdPASS) {
         printf("[wifi] ✗ 管理任务创建失败（只影响「还没连上」那几行提示）\n");
     }
 
@@ -537,4 +625,9 @@ bool wifi_sta_set_credentials(const char *ssid, const char *password)
 const char *wifi_sta_get_ssid(void)
 {
     return s_ssid;
+}
+
+void wifi_sta_set_giveup_handler(wifi_sta_giveup_cb_t cb)
+{
+    s_giveup_handler = cb;
 }
