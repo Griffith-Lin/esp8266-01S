@@ -14,6 +14,7 @@
 #include "wifi_sta.h"
 #include "relay.h"
 #include "link.h"
+#include "mqtt_link.h"
 #include "cmd.h"
 
 /**
@@ -48,11 +49,28 @@
   */
 #define CMD_BUF_SIZE  64
 
-/** @brief 收到的字节攒在这里，等拼出完整命令 */
-static char s_cmd_buf[CMD_BUF_SIZE + 1];   /* +1 留给结尾的 '\0' */
+/**
+  * @brief  一条链路的接收缓冲区
+  *
+  * @par 为什么每条链路一份，而不是共用一个
+  *
+  *   现在最多有两条链路同时在收，而它们的回调跑在【两条不同的任务】上。
+  *   共用一份的话，两个任务会同时往里 memcpy、同时改长度 —— 攒出来的
+  *   东西谁都不认识。各用各的，就不需要加锁。
+  *
+  * @note  顺带解决了一个旧毛病：以前换链路要清空缓冲区，怕的是 A 链路留下
+  *        的半条命令被 B 链路的字节补全，拼出一条谁都没发过的命令。现在
+  *        两条的字节根本不见面，那个坑从结构上没有了 —— 但【关掉某条链路
+  *        时仍然要把它自己那份清掉】，理由和做法见 cmd_on_rx_from()。
+  */
+typedef struct {
+    char buf[CMD_BUF_SIZE + 1];   ///< 攒字节的地方，+1 留给结尾的 '\0'
+    int  len;                     ///< 里面当前有多少个有效字节
+    volatile bool stale;          ///< 这条链路被关过，里面可能留着半条命令
+} cmd_rx_t;
 
-/** @brief s_cmd_buf 里当前有效字节数 */
-static int  s_cmd_len = 0;
+/** @brief 每条链路一份，下标就是 link_mode_t */
+static cmd_rx_t s_rx[LINK_COUNT];
 
 /**
   * @brief "开灯" 的 UTF-8 字节
@@ -78,10 +96,14 @@ static int  s_cmd_len = 0;
   *         只是往下面那张表里加一行、往 switch 里加一个 case。
   */
 typedef enum {
-    ACT_ON,       ///< 继电器吸合
-    ACT_OFF,      ///< 继电器释放
-    ACT_NET_TCP,  ///< 切到 TCP 链路
-    ACT_NET_UDP,  ///< 切到 UDP 链路
+    ACT_ON,         ///< 继电器吸合
+    ACT_OFF,        ///< 继电器释放
+    ACT_NET_TCP,    ///< 主链路换成 TCP
+    ACT_NET_UDP,    ///< 主链路换成 UDP
+    ACT_MQTT_ON,    ///< 打开 MQTT 那一路
+    ACT_MQTT_OFF,   ///< 关掉 MQTT 那一路
+    ACT_CLOUD_ON,   ///< 只往云端写 "on"，继电器不动
+    ACT_CLOUD_OFF,  ///< 只往云端写 "off"，继电器不动
 } cmd_action_t;
 
 /**
@@ -99,8 +121,10 @@ typedef struct {
   * @warning 这张表是【扫完再决定】的，不是"找到第一条就返回" —— 别改成那样。
   *          规则：在所有命中的关键字里，挑【在缓冲区里位置最靠前】的那一个。
   *
-  *          现在表里已经没有互相包含的关键字了，规则仍然留着：
-  *          它是正确的通用规则，而下一个加进来的关键字随时可能再踩同一个坑。
+  *          这条规则不是摆设：下面的 "cloud on" / "cloud off" / "mqtt on" /
+  *          "mqtt off" 都【包含】短关键字 "on" / "off"，两条都能命中。
+  *          靠的就是它 —— 拿 "cloud on" 说，c 在第 0 位、"on" 在第 6 位，
+  *          c 靠前，所以选中的是 cloud on。
   *
   * @note    往这张表里加关键字时，len 必须数【字节】：
   *          "on" = 2、"off" = 3、"net tcp" = 7，中文按上面的转义串数。
@@ -114,13 +138,28 @@ static const cmd_t s_cmds[] = {
     { "on",          2, ACT_ON  },   /* ASCII 别名，小写；不区分大小写的版本没做 */
     { "off",         3, ACT_OFF },
 
-    /* 链路切换。故意带上 "net " 前缀，而不是直接叫 "udp" / "tcp" ——
+    /* 主链路切换。故意带上 "net " 前缀，而不是直接叫 "udp" / "tcp" ——
        裸的 "tcp" 太容易在别的句子里撞上，而这两个词是要改设备行为的，
        撞一次就够难受了。
        ⚠ 和 "wifi " 不同，它们【不需要换行结尾】，匹配到就立刻执行，
-         这一点和 on / off 一样。 */
+         这一点和 on / off 一样。
+       ⚠ 换的是【跟 ESP32 那条主链路】，MQTT 那一路不受影响。 */
     { "net tcp",     7, ACT_NET_TCP },
     { "net udp",     7, ACT_NET_UDP },
+
+    /* MQTT 那一路的开关。和上面两条分开写，因为它是【独立】的一路：
+       可以和主链路同时开着，也可以单独关掉。
+       ⚠ 关键字里也含 "on" / "off"，靠的还是"位置最靠前"那条规则，
+         理由同下面的 cloud。 */
+    { "mqtt on",     7, ACT_MQTT_ON  },
+    { "mqtt off",    8, ACT_MQTT_OFF },
+
+    /* 云端。这两条【只管云端记着的那个值】，板子上的继电器一动不动 ——
+       这就是巴法云 /set 的语义：不推给任何订阅者，只更新服务端存的值。
+       两者都带上 "cloud " 前缀，是为了不和裸的 on / off 混在一起
+       （裸的那两个是真拉继电器的）。 */
+    { "cloud on",    8, ACT_CLOUD_ON  },
+    { "cloud off",   9, ACT_CLOUD_OFF },
 };
 
 /**
@@ -154,7 +193,8 @@ static const cmd_t s_cmds[] = {
   * 🟢 L2 —— 工具：切出逗号两边的 SSID 和密码。真正的坑（半条命令不能
              动执行表）在 cmd_try_one() 那一段。
   *
-  * @param[in] p  指向缓冲区里找到的 "wifi "
+  * @param[in] src  这条命令是从哪条链路来的（回执发回那儿）
+  * @param[in] p    指向缓冲区里找到的 "wifi "
   *
   * @retval   true   这一行处理完了（不管成功失败），已经从缓冲区里抠掉，调用方继续
   * @retval   false  【行还没收全】，什么都没做，等下一批字节
@@ -167,8 +207,9 @@ static const cmd_t s_cmds[] = {
   *
   * @note     所以规矩是：以换行结尾。网络调试助手发的时候记得勾"发送新行"。
   */
-static bool cmd_do_wifi(char *p)
+static bool cmd_do_wifi(link_mode_t src, char *p)
 {
+    cmd_rx_t *rx = &s_rx[src];   /* p 就指在这条链路自己那份缓冲区里 */
     char   *nl;
     char   *comma;
     char   *next;
@@ -217,11 +258,15 @@ static bool cmd_do_wifi(char *p)
        打错字不会把节点弄成砖。 */
     if (valid) {
         printf("[cmd] 换热点 → \"%s\"\n", ssid);
-        link_send(wifi_sta_set_credentials(ssid, pass)
-                  ? "WIFI OK (reconnecting)\r\n"
-                  : "WIFI FAIL (see serial log)\r\n", 0);
+        /* ⚠ 回执【必须全大写】：MQTT 模式下每条回执都会被推到 /up 上，
+           别的节点会拿它当命令解析。这里原来写的是 "reconnecting"，
+           里面那个小写的 "on" 正好命中命令表，会让对面的继电器吸合。
+           这条规矩的完整理由见 link.h 的 link_send()。 */
+        link_send(src, wifi_sta_set_credentials(ssid, pass)
+                       ? "WIFI OK (RECONNECTING)\r\n"
+                       : "WIFI FAIL (see serial log)\r\n", 0);
     } else {
-        link_send("WIFI FAIL (bad format)\r\n", 0);
+        link_send(src, "WIFI FAIL (bad format)\r\n", 0);
     }
 
     /* 不管成功失败，这一整行都要从缓冲区里抠掉。
@@ -230,9 +275,9 @@ static bool cmd_do_wifi(char *p)
     while (*next == '\r' || *next == '\n') {
         next++;
     }
-    s_cmd_len -= (int)(next - s_cmd_buf);
-    memmove(s_cmd_buf, next, s_cmd_len);
-    s_cmd_buf[s_cmd_len] = '\0';
+    rx->len -= (int)(next - rx->buf);
+    memmove(rx->buf, next, rx->len);
+    rx->buf[rx->len] = '\0';
 
     return true;
 }
@@ -246,17 +291,19 @@ static bool cmd_do_wifi(char *p)
   * @retval   true   找到并处理了一条（调用方要接着再试，可能还有第二条）
   * @retval   false  没找到完整命令，等下一批字节
   */
-static bool cmd_try_one(void)
+static bool cmd_try_one(link_mode_t src)
 {
     const cmd_t *found = NULL;
     char        *hit   = NULL;
     int          i;
-    bool         switched = false;   /* 这一轮是不是换了链路 */
+    cmd_rx_t    *rx = &s_rx[src];    /* 这条链路自己那份缓冲区 */
+    bool         switched = false;   /* 这一轮是不是换了主链路 */
+    link_mode_t  old_master = LINK_TCP;   /* 换之前是哪条，换完好清它的缓冲区 */
 
     /* 扫整张表，挑【位置最靠前】的那条 —— 这样收到 "开灯关灯" 时，
        会先执行开灯、再执行关灯，顺序和对方发送的顺序一致。 */
     for (i = 0; i < (int)CMD_COUNT; i++) {
-        char *p = strstr(s_cmd_buf, s_cmds[i].key);
+        char *p = strstr(rx->buf, s_cmds[i].key);
         if (p != NULL && (hit == NULL || p < hit)) {
             hit   = p;
             found = &s_cmds[i];
@@ -272,9 +319,9 @@ static bool cmd_try_one(void)
        "wifi " 末尾那个空格是有意的：它保证匹配到的是命令头，
        而不是某个 SSID 里恰好出现的 "wifi"。 */
     {
-        char *w = strstr(s_cmd_buf, KEY_WIFI);
+        char *w = strstr(rx->buf, KEY_WIFI);
         if (w != NULL && (hit == NULL || w < hit)) {
-            return cmd_do_wifi(w);
+            return cmd_do_wifi(src, w);
         }
     }
 
@@ -286,25 +333,59 @@ static bool cmd_try_one(void)
     case ACT_ON:
         relay_on();
         /* 回复用纯 ASCII：无论调试助手设成 UTF-8 还是 GBK，都不会显示成乱码 */
-        link_send("LED ON  (GPIO0 = HIGH)\r\n", 0);
+        link_send(src, "LED ON  (GPIO0 = HIGH)\r\n", 0);
         break;
 
     case ACT_OFF:
         relay_off();
-        link_send("LED OFF (GPIO0 = LOW)\r\n", 0);
+        link_send(src, "LED OFF (GPIO0 = LOW)\r\n", 0);
         break;
 
-    /* 这两条的回执由 link_switch() 自己发 —— 因为回执必须走【旧】链路，
-       而这里还没换，正好符合要求，所以不要再补一句 link_send()。
-       补了的话会发两遍。 */
+    /* 换主链路。回执由 link_switch() 自己发（发回 src）—— 它要赶在旧主链路
+       被关掉【之前】把回执发出去，所以这里不要再补一句 link_send()，
+       补了会发两遍，而且第二遍多半已经发不出去了。
+       ⚠ 要关掉的是【换向之前】那条主链路，所以先把它的名字记下来 ——
+         换完再问 link_master() 拿到的就是新值了。 */
     case ACT_NET_TCP:
-        link_switch(LINK_TCP);
-        switched = true;
+    case ACT_NET_UDP: {
+        link_mode_t target = (found->action == ACT_NET_TCP) ? LINK_TCP : LINK_UDP;
+
+        old_master = link_master();
+        link_switch(src, target);
+        /* 真换了才算 —— 本来就是这条的话，链路和缓冲区都该原样留着，
+           不能把这条命令后面那几条还没执行的命令一起清掉。 */
+        switched = (link_master() != old_master);
+        break;
+    }
+
+    /* MQTT 那一路的开关。回执同样由 link_set_mqtt() 自己发 ——
+       关的时候它是"先回执、再关"，这里补一句就发不出去了。 */
+    case ACT_MQTT_ON:
+        link_set_mqtt(src, true);
         break;
 
-    case ACT_NET_UDP:
-        link_switch(LINK_UDP);
-        switched = true;
+    case ACT_MQTT_OFF:
+        link_set_mqtt(src, false);
+        break;
+
+    /* 云端那两条：只往 <主题>/set 发布，【继电器一动不动】。
+       回执照旧走 link_send()，也就是命令来的那条路 —— 命令要是从 MQTT
+       进来的，它会推到 /up 上。所以回执文案【必须全大写】：里面要是混进
+       一个小写的 "on"，别的订阅了这个主题的节点收到后会当成开灯命令执行。 */
+    case ACT_CLOUD_ON:
+        if (mqtt_link_send_set("on", 0) < 0) {
+            link_send(src, "CLOUD FAIL (mqtt not up)\r\n", 0);
+        } else {
+            link_send(src, "CLOUD SET ON\r\n", 0);
+        }
+        break;
+
+    case ACT_CLOUD_OFF:
+        if (mqtt_link_send_set("off", 0) < 0) {
+            link_send(src, "CLOUD FAIL (mqtt not up)\r\n", 0);
+        } else {
+            link_send(src, "CLOUD SET OFF\r\n", 0);
+        }
         break;
     }
 
@@ -312,20 +393,27 @@ static bool cmd_try_one(void)
        把 hit 之后的内容整体搬到开头，长度相应减少。
        注意减掉的是找到的那条命令【自己的字节数】，不是写死的 2。 */
     char *next = hit + found->len;
-    s_cmd_len -= (int)(next - s_cmd_buf);
-    memmove(s_cmd_buf, next, s_cmd_len);
-    s_cmd_buf[s_cmd_len] = '\0';
+    rx->len -= (int)(next - rx->buf);
+    memmove(rx->buf, next, rx->len);
+    rx->buf[rx->len] = '\0';
 
-    /* 刚换了链路 → 缓冲区整个清空。
-       不清的话，旧链路在切换前发来的半条命令会留在缓冲区里，
-       被新链路的字节"补全"，拼出一条谁都没发过的命令：
-       旧链路上来了个 "开"，切换后又来了个 "灯"，缓冲区里就凑成了 "开灯"。
+    /* 刚换了主链路 → 给【两条】主链路各挂一个"要清"的标志。
 
-       ⚠ 必须放在【抠掉命令之后】。放前面的话 s_cmd_len 先归零，
+       关掉的那条可能攒着半条命令，等它下次再被打开，新来的字节会接着
+       那半条往下拼，拼出一条谁都没发过的命令；新打开的那条也可能留着
+       上一回用剩的残渣。MQTT 那份不用管 —— 它一次给一条完整消息，
+       攒不出半条命令来。
+
+       ⚠ 这里【只置标志，不直接清】。本函数跑在命令来的那条链路的任务上，
+         而另一条链路的任务这会儿可能正往它自己的缓冲区里 memcpy ——
+         两个任务一起写同一块内存就撞车了。真正动手清的是各自的任务，
+         见 cmd_on_rx_from()。
+
+       ⚠ 且必须放在【抠掉命令之后】。放前面的话 rx->len 先归零，
          上面那句相减会变成负数，memmove 的长度会大得离谱，直接崩。 */
     if (switched) {
-        s_cmd_len = 0;
-        s_cmd_buf[0] = '\0';
+        s_rx[old_master].stale = true;
+        s_rx[link_master()].stale = true;   /* 换完的这条 = 新打开的那条 */
     }
 
     return true;
@@ -365,19 +453,25 @@ static void dump_hex(const char *data, int len)
   * 🟡 L1 —— 架构：追加新字节、循环取出所有完整命令。半条命令要留在
              缓冲区里等下一包 —— 缓冲区多大、留多久，是这里定的。
   *
+  * @param[in] src   这批字节是从哪条链路来的
   * @param[in] data  裸字节，可能只是一条命令的一部分
   * @param[in] len   字节数
+  *
+  * @note     攒的时候用的是【这条链路自己那份】缓冲区，所以两条链路同时
+  *           收也不会串味 —— 两个任务各写各的，不用加锁。
   */
-static void cmd_on_rx(const char *data, int len)
+static void cmd_on_rx(link_mode_t src, const char *data, int len)
 {
+    cmd_rx_t *rx = &s_rx[src];
+
     printf("[cmd] 收到 %d 字节:", len);
     dump_hex(data, len);
 
     /* 缓冲区放不下就整个丢掉重来。
        走到这一步说明前面攒的字节一直没拼出任何命令（比如对方发的是乱码）。 */
-    if (s_cmd_len + len > CMD_BUF_SIZE) {
-        printf("[cmd] 缓冲区放不下，丢掉前面攒的 %d 字节\n", s_cmd_len);
-        s_cmd_len = 0;
+    if (rx->len + len > CMD_BUF_SIZE) {
+        printf("[cmd] 缓冲区放不下，丢掉前面攒的 %d 字节\n", rx->len);
+        rx->len = 0;
     }
 
     /* 极端情况：一次就送来超过缓冲区大小的数据，只留最后一段 */
@@ -386,40 +480,63 @@ static void cmd_on_rx(const char *data, int len)
         len = CMD_BUF_SIZE;
     }
 
-    memcpy(s_cmd_buf + s_cmd_len, data, len);
-    s_cmd_len += len;
-    s_cmd_buf[s_cmd_len] = '\0';
+    memcpy(rx->buf + rx->len, data, len);
+    rx->len += len;
+    rx->buf[rx->len] = '\0';
 
     /* 一次可能匹配出好几条命令，循环处理干净 */
-    while (cmd_try_one()) {
+    while (cmd_try_one(src)) {
         /* 空循环体，活儿都在 cmd_try_one() 里干完了 */
     }
 }
 
 /**
-  * @brief    带【来源】的入口：不是当前活动链路来的数据，一律丢掉
+  * @brief    带【来源】的入口：从已经关掉的那条链路来的数据，一律丢掉
   *
-  * 🟢 L2 —— 工具：不是当前链路来的直接丢，是就转 cmd_on_rx()。
+  * 🟢 L2 —— 工具：关掉的那条来的直接丢，是就转 cmd_on_rx()。
   *
   * @param[in] src   这包数据是从哪条链路来的
   * @param[in] data  裸字节，可能只是一条命令的一部分
   * @param[in] len   字节数
   *
-  * @note     为什么需要这一层：两个传输模块的 stop() 都只是置个标志，
-  *           任务要等下一次 recv/recvfrom 超时（最多 5 秒）才真正断开。
-  *           这段窗口里【旧链路还在收】—— 不管它的话，切走之后发过来的
-  *           命令照样会被执行，而回执走的是新链路。
+  * @note     判断的是"这一路【开着没有】"，不是"是不是当前那条"—— 现在
+  *           MQTT 和主链路可以同时开着，两条都得放行。
   *
-  *           加上这一层，切换就是【干脆】的：链路一改，旧链路的包
-  *           立刻失效，不用等它自己慢慢关。
+  * @note     为什么需要这一层：三个传输模块的 stop() 都只是置个标志就返回，
+  *           链路要过一会儿才安静下来 —— tcp/udp 要等下一次 recv/recvfrom
+  *           超时（最多 5 秒），MQTT 那个则连 broker 都不肯断开。
+  *           这段窗口里【旧链路还在收】—— 不管它的话，关掉之后发过来的
+  *           命令照样会被执行。
+  *
+  *           加上这一层，开关就是【干脆】的：标志一改，那条链路的包
+  *           立刻失效，不用等它自己慢慢关。也正因为有这一层兜底，
+  *           mqtt_link_stop() 才敢只置一个标志（原因见 mqtt_link.h）。
+  *
+  * @note     src 还要继续往下传（一路传到 link_send()）—— 回执必须发回命令
+  *           来的那条路，不能发到"当前那条"上去，因为现在没有"当前那条"了。
   */
 static void cmd_on_rx_from(link_mode_t src, const char *data, int len)
 {
-    if (src != link_current()) {
-        printf("[cmd] 忽略 %d 字节：来自已停用的链路\n", len);
+    cmd_rx_t *rx = &s_rx[src];
+
+    if (!link_is_open(src)) {
+        printf("[cmd] 忽略 %d 字节：来自已关闭的链路\n", len);
         return;
     }
-    cmd_on_rx(data, len);
+
+    /* 这条链路被关过 → 先把它那份缓冲区清干净再收新的。
+       不清的话，关之前留下的半条命令会被现在这些字节"补全"，
+       拼出一条谁都没发过的命令。
+
+       ⚠ 只能在这里清：本函数跑在这条链路【自己的任务】上，动的是自己的
+         缓冲区。换链路的那条任务只挂标志（见 cmd_try_one()），不替别人清。 */
+    if (rx->stale) {
+        rx->len = 0;
+        rx->buf[0] = '\0';
+        rx->stale = false;
+    }
+
+    cmd_on_rx(src, data, len);
 }
 
 void cmd_on_tcp_rx(const char *data, int len)
@@ -430,4 +547,9 @@ void cmd_on_tcp_rx(const char *data, int len)
 void cmd_on_udp_rx(const char *data, int len)
 {
     cmd_on_rx_from(LINK_UDP, data, len);
+}
+
+void cmd_on_mqtt_rx(const char *data, int len)
+{
+    cmd_on_rx_from(LINK_MQTT, data, len);
 }
