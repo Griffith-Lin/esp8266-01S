@@ -6,20 +6,23 @@
   * 命令怎么解析、走 TCP 还是 UDP，全在下面这些模块里：
   *
   *   relay.c        继电器（GPIO0、上电为关、strapping 脚）
-  *   link.c         当前走哪条链路 + 所有回执的出口
+  *   link.c         哪几条链路开着 + 所有回执的出口
   *   cmd.c          收字节 → 拼命令 → 调 relay / link / wifi_sta
   *   wifi_sta.c     连热点、凭据存 NVS、断线重连
   *   ap_prov.c      连不上时的兜底：开热点 + 网页，让人用手机填新凭据
   *   tcp_client.c   连服务端、收发字节（纯传输，不知道"开灯"是什么）
   *   udp_client.c   不建连接、直接丢数据报（同样纯传输）
+  *   mqtt_link.c    连巴法云 broker、订阅主题（同样纯传输，只是对端是 broker）
   *
   * @par 要改什么，去哪儿
   *
   *   - 服务端 IP / 端口   → tcp_client.c 和 udp_client.c 的顶部【两个文件都要改】
+  *   - broker / 主题 / ID → mqtt_link.c 顶部那几行 #define（用户名密码也在那儿）
   *   - 热点名 / 密码      → 优先发命令 wifi \<SSID\>,\<密码\>；改代码只能改默认值
   *   - 能识别的命令        → cmd.c 的 s_cmds 表
   *   - 继电器接哪个脚      → relay.c 顶部的 RELAY_GPIO
-  *   - 开机默认走哪条链路  → 本文件 app_main() 里的 link_init()
+  *   - 开机走哪条主链路    → 本文件 app_main() 里的 link_init()
+  *   - 开机 MQTT 开不开    → link.c 的 link_init()（默认开）
   *   - 配网热点的名字/密码 → ap_prov.c 顶部的 AP_SSID_PREFIX / AP_PASSWORD
   *   - 失败几次转配网      → wifi_sta.h 里的 WIFI_RETRY_BEFORE_AP
   *
@@ -52,6 +55,7 @@
 #include "ap_prov.h"
 #include "tcp_client.h"
 #include "udp_client.h"
+#include "mqtt_link.h"
 #include "relay.h"
 #include "link.h"
 #include "cmd.h"
@@ -80,9 +84,9 @@ static void print_chip_info(void)
   *
   * 🟡 L1 —— 架构：全工程的开机顺序就是这几行 —— 先 relay_init()
              （从此刻起继电器才可控），再 WiFi，再注册回调和兜底，
-             最后 link_init()。
+             等 IP，最后 link_init()。
   *
-  * @note  下面四步的【顺序不能动】，每一步的原因都写在那一行上面。
+  * @note  下面五步的【顺序不能动】，每一步的原因都写在那一行上面。
   */
 void app_main(void)
 {
@@ -102,18 +106,39 @@ void app_main(void)
     /* ③ 注册回调 —— 必须在 link_init() 之前：后者会立刻把链路启动起来，
           注册晚了第一段到达的数据会因为回调还是 NULL 而被悄悄丢掉。
 
-          两个都注册：当前只有一条在收，但切换之后另一条需要自己的入口。 */
+          三个都注册：现在最多【两条同时开着】（主链路 + MQTT），每条都得
+          有自己的入口。 */
     tcp_client_set_rx_handler(cmd_on_tcp_rx);
     udp_client_set_rx_handler(cmd_on_udp_rx);
+    mqtt_link_set_rx_handler(cmd_on_mqtt_rx);
 
-    /* ④ 定初始链路并启动它。开机默认走 TCP —— 保持和"加 UDP 之前"一致，
-          加一个模式不该顺手改变已经跑通的那条路。
-          想改成开机走 UDP，把这里换成 LINK_UDP 即可，别处不用动。
+    /* ④ 等 WiFi 真的连上（拿到 IP）再往下走 —— 链路要等这一步。
 
-          它会自己等 WiFi 拿到 IP，所以紧跟在 wifi_sta_init() 后面调用即可。 */
+          ⚠ 这一步主要是给 MQTT 那一路等的：它的 broker 是【域名】
+            （mqtt.bemfa.com），没有 IP 就没有 DNS，启起来只能白转。
+            主链路 tcp/udp 不受影响 —— 它们本来就在各自的任务里等在同一
+            个位置上（建 socket 前先等 IP），多这一等等于没等。
+
+          ⚠ 本函数会【阻塞】在这里，通常一两秒。热点一直连不上就一直等下
+            去 —— 那正是我们要的：等 ap_prov.c 那边拿到新凭据、WiFi 真起来
+            了，这里再继续。（ap_prov 跑在 wifi_sta 自己的管理任务上，不受
+            这里阻塞的影响。）
+            wifi_sta_wait_ip() 不清事件位，所以不影响别的任务同时在等。 */
+    wifi_sta_wait_ip(UINT32_MAX);
+
+    /* ⑤ 定主链路并启动它，MQTT 那一路也会一起开起来。
+
+          主链路开机默认走 TCP —— 保持和"加 UDP 之前"一致，加一个模式不该
+          顺手改变已经跑通的那条路。想改成开机走 UDP，把这里换成 LINK_UDP
+          即可，别处不用动。
+
+          MQTT 还有个门槛：broker 是域名，热点得会下发 DNS —— ESP32 自己
+          开的 SoftAP 没有 DNS，那条路走不通，得用手机热点或路由器。
+          所以在"只有 ESP32、没有外网"的现场，串口上会看到它一直在重连；
+          不想要就发一条 mqtt off 让它安静。 */
     link_init(LINK_TCP);
 
-    /* ⑤ 主任务保持存活。真正的活儿都在上面那几条任务里异步跑着。
+    /* ⑥ 主任务保持存活。真正的活儿都在上面那几条任务里异步跑着。
 
           ⚠ 这里本身【不要】返回、也不要主动重启：一旦复位，GPIO0 会被重新
             采样成启动模式选择脚，此时若正好处在低电平，芯片就会进下载模式。
