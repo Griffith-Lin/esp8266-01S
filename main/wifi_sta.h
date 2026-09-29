@@ -67,6 +67,9 @@
 /**
   * @brief    初始化并开始连接
   *
+  * 🟡 L1 —— 架构：注册事件回调 + 起管理任务，6144 那个栈大小在这里定；
+             异步，返回时还没连上。
+  *
   * @note     本函数【不阻塞】：返回时连接还在后台进行，过程和结果由串口日志输出。
   *           要等"真的拿到 IP"，调 wifi_sta_wait_ip()。
   *
@@ -80,6 +83,9 @@ void wifi_sta_init(void);
 
 /**
   * @brief    阻塞等待，直到拿到 IP（DHCP 分配成功，也就是真的能通信了）
+  *
+  * 🟡 L1 —— 架构："真的连上了"的唯一标志；不清事件位，所以要照顾
+             同时在等的其它任务。
   *
   * @param[in] timeout_ms  超时毫秒数；传 UINT32_MAX 表示一直等
   *
@@ -95,6 +101,9 @@ bool wifi_sta_wait_ip(uint32_t timeout_ms);
 
 /**
   * @brief    换一个热点：写进 NVS（掉电不丢）+ 立刻用新凭据重连
+  *
+  * 🟡 L1 —— 架构：先存 NVS 再重连，顺序和字节长度检查都不能省；
+             失败时当前连接不受影响。
   *
   * @param[in] ssid      新的热点名，长度 1 ~ 32 字节
   * @param[in] password  新的密码，长度 <= 64 字节；可以是空串（开放热点）
@@ -113,6 +122,8 @@ bool wifi_sta_set_credentials(const char *ssid, const char *password);
 
 /**
   * @brief    读出当前生效的热点名
+  *
+  * 🟢 L2 —— 工具：返回内部静态缓冲区，别 free、别长期保存。
   *
   * @return   指向模块内部静态缓冲区的指针
   *
@@ -156,6 +167,8 @@ typedef bool (*wifi_sta_giveup_cb_t)(char *ssid_out, size_t ssid_size,
 
 /**
   * @brief    注册"连不上该找谁"的回调
+  *
+  * 🟢 L2 —— 工具：存下一个函数指针，什么时候用它由重试计数决定。
   *
   * @param[in] cb  回调；传 NULL 等于取消注册 —— 那就退回老行为：一直重试，
   *                只在串口上每隔 30 秒吭一声

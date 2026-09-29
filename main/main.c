@@ -59,6 +59,8 @@
 /**
   * @brief 启动时把芯片信息打到串口上
   *
+  * 🟢 L2 —— 工具：开机打几行芯片信息。
+  *
   * @note  spi_flash_get_chip_size() 读的是【编译时写进 sdkconfig 的值】，
   *        不是探测出来的 —— 所以这行打印不能用来判断板上真实有多少 flash。
   *        要确认容量，用 esptool.py flash_id（见 学习笔记/ESP8266开发流程.md）。
@@ -75,6 +77,10 @@ static void print_chip_info(void)
 
 /**
   * @brief 程序入口
+  *
+  * 🟡 L1 —— 架构：全工程的开机顺序就是这几行 —— 先 relay_init()
+             （从此刻起继电器才可控），再 WiFi，再注册回调和兜底，
+             最后 link_init()。
   *
   * @note  下面四步的【顺序不能动】，每一步的原因都写在那一行上面。
   */

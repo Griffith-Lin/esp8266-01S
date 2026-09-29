@@ -52,6 +52,8 @@ typedef void (*tcp_rx_handler_t)(const char *data, int len);
 /**
   * @brief    注册"收到数据"的回调
   *
+  * 🟢 L2 —— 工具：一次赋值。"必须在 start() 之前调"是调用方的规矩。
+  *
   * @param[in] handler  上层提供的处理函数；传 NULL 表示不处理
   *
   * @warning  必须在 tcp_client_start() 【之前】调用。注册晚了，
@@ -62,6 +64,9 @@ void tcp_client_set_rx_handler(tcp_rx_handler_t handler);
 
 /**
   * @brief    启用 TCP
+  *
+  * 🟡 L1 —— 架构：任务只建一次，重复调等于"确保它开着"；内部先等
+             IP 再连，连不上每 2 秒重来。
   *
   * @note     任务只会被创建一次，重复调用等于"确保它开着" ——
   *           从别的模式切回来时直接调它就行，不会多出一条任务。
@@ -76,6 +81,9 @@ void tcp_client_start(void);
 /**
   * @brief    停用 TCP：关掉连接，任务转成空转，但【不退出】
   *
+  * 🟡 L1 —— 架构：不阻塞、不等任务退出，代价是最长 5 秒的窗口里旧
+             连接还在收 —— 挡包是 cmd 那边的事。
+  *
   * @note     本函数【不阻塞】、【立刻返回】，也不会等任务真正停下来 ——
   *           所以在任何地方调用都是安全的（包括从接收回调里调）。
   *
@@ -89,6 +97,9 @@ void tcp_client_stop(void);
 
 /**
   * @brief    往服务端发一段字节
+  *
+  * 🟡 L1 —— 架构：没连上就直接丢并打日志，不等 —— 拿"发送可能静默
+             失败"换"不拖住命令解析"。
   *
   * @param[in] data  要发的数据
   * @param[in] len   字节数；传 0 表示"data 是 C 字符串，自己算长度"

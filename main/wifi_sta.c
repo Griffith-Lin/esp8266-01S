@@ -143,6 +143,8 @@ static wifi_sta_giveup_cb_t s_giveup_handler = NULL;
 /**
   * @brief    把 src 拷进定长缓冲区，超长就截断，并保证以 '\0' 结尾
   *
+  * 🟢 L2 —— 工具：定长拷贝，超长截断并补 \0。
+  *
   * @param[out] dst       目标缓冲区
   * @param[in]  dst_size  目标缓冲区的总容量（含留给 '\0' 的那一个字节）
   * @param[in]  src       源字符串
@@ -166,6 +168,9 @@ static void copy_str(char *dst, size_t dst_size, const char *src)
 
 /**
   * @brief    从 NVS 读凭据到 s_ssid / s_pass
+  *
+  * 🟡 L1 —— 架构：从 NVS 读凭据；读不到（第一次上电）就退回编译进去
+             的默认值 —— 所以第一次开机不配网也能连上。
   *
   * @retval   true   读到了（两个键都在，而且 SSID 不是空串）
   * @retval   false  没读到，或者读到的 SSID 是空串
@@ -224,6 +229,8 @@ static bool nvs_load_credentials(void)
 /**
   * @brief    把凭据写进 NVS
   *
+  * 🟡 L1 —— 架构：写 NVS 再 commit；断电之后凭据还在不在，就看这一步。
+  *
   * @param[in] ssid      热点名
   * @param[in] password  密码
   *
@@ -270,6 +277,10 @@ static bool nvs_save_credentials(const char *ssid, const char *password)
 /**
   * @brief    把 s_ssid / s_pass 灌进 WiFi 驱动
   *
+  * 🟡 L1 —— 架构：把 s_ssid/s_pass 灌进 wifi_config_t 下发。只发配置
+             不发起连接 —— threshold.authmode 那行也在这里，它就是从机
+             连不上开放式热点的原因。
+  *
   * @note     只改配置，不负责连接。真正发起连接的是 esp_wifi_connect()。
   *
   * @warning  threshold.authmode 是加密方式的【下限】，不是"要求"。
@@ -301,6 +312,9 @@ static void apply_credentials(void)
 
 /**
   * @brief    WiFi / IP 事件回调
+  *
+  * 🟡 L1 —— 架构：STA 启动/断开/拿到 IP 三个分支；重试计数和给别的任务
+             等的事件位都在这里改。
   *
   * @param[in] arg         注册时传进来的参数，本模块没用（注册时传的 NULL）
   * @param[in] event_base  事件大类：WIFI_EVENT 或 IP_EVENT
@@ -367,6 +381,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 /**
   * @brief    从配网模式回来：存下新凭据、把 WiFi 拉回 STA、开始连
   *
+  * 🟡 L1 —— 架构：配网回来这一趟 —— 先存新凭据（存失败就放弃），再切回
+             STA、重下配置、起射频，最后交给事件回调去连。
+  *
   * @param[in] ssid      用户在网页上填的热点名
   * @param[in] password  同上，密码
   *
@@ -410,6 +427,10 @@ static void sta_restart_from_prov(const char *ssid, const char *password)
 
 /**
   * @brief    状态上报任务
+  *
+  * 🟡 L1 —— 架构：没连上就定时上报，失败满 WIFI_RETRY_BEFORE_AP 次就
+             叫 ap_prov_run()。等 IP 时只能用 pdFALSE —— 清了事件位，
+             wifi_sta_wait_ip() 就永远等不到。
   *
   * @param[in] arg  任务参数，本模块没用
   *

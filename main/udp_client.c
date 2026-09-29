@@ -146,6 +146,9 @@ int udp_client_send(const char *data, int len)
 /**
   * @brief    主动往主节点报一次到
   *
+  * 🟡 L1 —— 架构：UDP 没有连接，所以得定期喊一声自己在；喊话周期
+             （30 秒）是这个机制唯一的取舍旋钮。
+  *
   * @note  开头那包和周期心跳用的是同一条消息，所以抽成一个函数。
   *        ASCII 内容，原因同 tcp_client 那边：不挑编码，不会显示成乱码。
   */
@@ -156,6 +159,9 @@ static void udp_announce(void)
 
 /**
   * @brief    传输任务：bind 本机端口 → 收发 → 没在用了就空转，永不退出
+  *
+  * 🟡 L1 —— 架构：等 IP→bind→recvfrom→交回调，外加 30 秒心跳，永不退出；
+             recvfrom() 的超时值同时决定了 stop 之后多久真正关 socket。
   *
   * @param[in] pvParameters  任务参数，本模块没用
   *

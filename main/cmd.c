@@ -151,6 +151,9 @@ static const cmd_t s_cmds[] = {
 /**
   * @brief    处理一条 wifi 命令
   *
+  * 🟢 L2 —— 工具：切出逗号两边的 SSID 和密码。真正的坑（半条命令不能
+             动执行表）在 cmd_try_one() 那一段。
+  *
   * @param[in] p  指向缓冲区里找到的 "wifi "
   *
   * @retval   true   这一行处理完了（不管成功失败），已经从缓冲区里抠掉，调用方继续
@@ -236,6 +239,9 @@ static bool cmd_do_wifi(char *p)
 
 /**
   * @brief    在缓冲区里找一条命令并执行
+  *
+  * 🟡 L1 —— 架构：挑缓冲区里位置最靠前的那条命令执行。抠掉命令和清
+             缓冲区的先后、半条 wifi 行不许动执行表，都是这里定的。
   *
   * @retval   true   找到并处理了一条（调用方要接着再试，可能还有第二条）
   * @retval   false  没找到完整命令，等下一批字节
@@ -328,6 +334,8 @@ static bool cmd_try_one(void)
 /**
   * @brief    把收到的字节按十六进制打出来
   *
+  * 🟢 L2 —— 工具：调试用，最多打 16 个字节。
+  *
   * @param[in] data  要打印的字节
   * @param[in] len   字节数
   *
@@ -353,6 +361,9 @@ static void dump_hex(const char *data, int len)
 
 /**
   * @brief    每收到一批字节就被调用一次
+  *
+  * 🟡 L1 —— 架构：追加新字节、循环取出所有完整命令。半条命令要留在
+             缓冲区里等下一包 —— 缓冲区多大、留多久，是这里定的。
   *
   * @param[in] data  裸字节，可能只是一条命令的一部分
   * @param[in] len   字节数
@@ -387,6 +398,8 @@ static void cmd_on_rx(const char *data, int len)
 
 /**
   * @brief    带【来源】的入口：不是当前活动链路来的数据，一律丢掉
+  *
+  * 🟢 L2 —— 工具：不是当前链路来的直接丢，是就转 cmd_on_rx()。
   *
   * @param[in] src   这包数据是从哪条链路来的
   * @param[in] data  裸字节，可能只是一条命令的一部分

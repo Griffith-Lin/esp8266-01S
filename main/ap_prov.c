@@ -120,6 +120,8 @@ static char s_new_pass[PROV_PASS_MAX + 1];
 /**
   * @brief    把 src 拷进定长缓冲区，超长就截断，并保证以 '\0' 结尾
   *
+  * 🟢 L2 —— 工具：定长拷贝，超长截断并补 \0。
+  *
   * @note     wifi_sta.c 里有一个一模一样的。没有抽成公共头文件，是因为它只有
   *           六行 —— 为六行纯函数开一个模块不划算。改动的时候记得两边一起看。
   *
@@ -138,6 +140,8 @@ static void copy_str(char *dst, size_t dst_size, const char *src)
 
 /**
   * @brief    把一个十六进制字符转成 0~15
+  *
+  * 🟢 L2 —— 工具：一个字符换个数字，非法返回 -1。
   *
   * @param[in] c  待转换的字符
   *
@@ -159,6 +163,8 @@ static int hex_val(char c)
 
 /**
   * @brief    就地把表单里的转义还原成原字符
+  *
+  * 🟢 L2 —— 工具：表单解码，就地把 %XX 和 + 还原。
   *
   * @param[in,out] s  以 '\0' 结尾的字符串，就地改写
   *
@@ -199,6 +205,8 @@ static void url_decode(char *s)
 
 /**
   * @brief    把 HTML 里有特殊含义的字符换成实体
+  *
+  * 🟢 L2 —— 工具：四个字符换实体 —— 防的是把 SSID 里的尖括号当标签用。
   *
   * @param[out] dst       目标缓冲区
   * @param[in]  dst_size  dst 的容量
@@ -245,6 +253,9 @@ static void escape_html(char *dst, size_t dst_size, const char *src)
 
 /**
   * @brief    把 POST 的表单正文整条读进缓冲区
+  *
+  * 🟡 L1 —— 架构：按 Content-Length 收满正文，缓冲区上限和读超时都在
+             这几行里定；它一阻塞，整个 httpd 任务都得跟着等。
   *
   * @param[in]  req       请求
   * @param[out] buf       目标缓冲区
@@ -352,6 +363,8 @@ static const char PAGE_TAIL[] =
 /**
   * @brief    回一个一两句话的说明页
   *
+  * 🟢 L2 —— 工具：拼一条状态提示页发出去。
+  *
   * @param[in] req    请求
   * @param[in] status HTTP 状态行，用 SDK 的 HTTPD_200 / HTTPD_400 那些宏
   * @param[in] title  标题，也就是正文
@@ -401,6 +414,8 @@ static esp_err_t send_notice(httpd_req_t *req, const char *status,
 /**
   * @brief  表单页：GET /
   *
+  * 🟢 L2 —— 工具：分三段发出表单页，中间插当前 SSID（已转义）。
+  *
   * @note   分三段发（前半截、转义过的热点名、后半截），见 PAGE_HEAD 的注释。
   *
   * @warning 三个 httpd_resp_send_chunk 之后【必须】再发一个长度 0 的收尾，
@@ -425,6 +440,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
 /**
   * @brief  收凭据：POST /save
+  *
+  * 🟡 L1 —— 架构：必须先发回执、再置配网完成位。反过来的话 ap_prov_run()
+             会抢先把网页服务停掉，浏览器只看到连接被掐断。
   *
   * @note   正文是表单默认的 application/x-www-form-urlencoded，形如
   *         "ssid=xxx&pass=yyy"，两个字段都做过了转义。所以顺序是：
@@ -500,6 +518,9 @@ static esp_err_t save_post_handler(httpd_req_t *req)
 
 /**
   * @brief  把 WiFi 切成 AP 模式、起热点、起 HTTP 服务
+  *
+  * 🟡 L1 —— 架构：停射频→切 AP 模式→下发配置→起射频→起网页服务，
+             这个顺序换不得（和 wifi_sta_init() 是同一套路）。
   *
   * @retval   true   都起来了，可以等人来填了
   * @retval   false  中途失败。已经拉起来的部分【不在这里拆】，由 ap_prov_run()

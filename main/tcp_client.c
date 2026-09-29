@@ -105,6 +105,9 @@ int tcp_client_send(const char *data, int len)
 /**
   * @brief    传输任务：连服务端 → 收发 → 断了就重连，永不退出
   *
+  * 🟡 L1 —— 架构：等 IP→连接→recv→交回调→断了重连，永不退出。
+             s_sock 必须先置 -1 再 close，否则别的任务会往已关的 fd 写。
+  *
   * @param[in] pvParameters  任务参数，本模块没用
   *
   * @note     整个流程是一个死循环：连上 → 收数据 → 断了 → 等 1 秒 → 再连。

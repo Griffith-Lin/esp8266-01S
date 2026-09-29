@@ -24,6 +24,9 @@
 /**
   * @brief 把 GPIO0 配成继电器输出，并置成"关"的状态
   *
+  * 🔴 L0 —— 生死线：这句一开驱动器，GPIO0 就按输出寄存器里的复位值（0）
+             开始输出 —— "上电为关"是设计，不是巧合。
+  *
   * @note  上电默认不动作，见文件头的 @warning。
   *
   * @warning 必须在任何 relay_on() 之前调用，而且【只调一次】。
@@ -32,6 +35,9 @@ void relay_init(void);
 
 /**
   * @brief 继电器吸合（GPIO0 拉高）
+  *
+  * 🔴 L0 —— 生死线：把 GPIO0 拉离危险电平。任何要加重启的地方都
+             必须先调它。
   *
   * @warning GPIO0 是 ESP8266 的启动模式选择脚（strapping pin）：复位采样时
   *          它为低，芯片会直接进 UART 下载模式，【程序根本不运行】。
@@ -43,5 +49,10 @@ void relay_init(void);
   */
 void relay_on(void);
 
-/** @brief 继电器释放（GPIO0 拉低） */
+/**
+  * @brief 继电器释放（GPIO0 拉低）
+  *
+  * 🔴 L0 —— 生死线：执行完这根线就是低的 —— 此刻复位，芯片直接进
+             UART 下载模式，程序根本不跑。
+  */
 void relay_off(void);

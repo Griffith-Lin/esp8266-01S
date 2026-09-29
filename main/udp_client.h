@@ -57,6 +57,8 @@ typedef void (*udp_rx_handler_t)(const char *data, int len);
 /**
   * @brief    注册"收到数据"的回调
   *
+  * 🟢 L2 —— 工具：一次赋值。"必须在 start() 之前调"是调用方的规矩。
+  *
   * @param[in] handler  上层提供的处理函数；传 NULL 表示不处理
   *
   * @warning  必须在 udp_client_start() 【之前】调用。注册晚了，
@@ -66,6 +68,9 @@ void udp_client_set_rx_handler(udp_rx_handler_t handler);
 
 /**
   * @brief    启用 UDP
+  *
+  * 🟡 L1 —— 架构：任务只建一次；内部先等 IP 再 bind，bind 失败每
+             2 秒重试（比如端口被占）。
   *
   * @note     任务只会被创建一次，重复调用等于"确保它开着" ——
   *           从别的模式切回来时直接调它就行，不会多出一条任务。
@@ -79,6 +84,9 @@ void udp_client_start(void);
 /**
   * @brief    停用 UDP：关掉 socket，任务转成空转，但【不退出】
   *
+  * 🟡 L1 —— 架构：不阻塞、不等任务退出，真正关 socket 要等 recvfrom()
+             那一轮超时（最多 5 秒）。
+  *
   * @note     本函数【不阻塞】、【立刻返回】，也不会等任务真正停下来 ——
   *           所以在任何地方调用都是安全的（包括从接收回调里调）。
   *
@@ -91,6 +99,8 @@ void udp_client_stop(void);
 
 /**
   * @brief    往主节点发一个数据报
+  *
+  * 🟢 L2 —— 工具：往写死的地址 sendto。地址为什么写死，见文件头。
   *
   * @param[in] data  要发的数据
   * @param[in] len   字节数；传 0 表示"data 是 C 字符串，自己算长度"

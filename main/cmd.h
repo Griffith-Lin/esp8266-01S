@@ -32,6 +32,8 @@
 /**
   * @brief    注册给 tcp_client 的接收回调
   *
+  * 🟢 L2 —— 工具：薄包装，判完来源就转给同一份解析逻辑。
+  *
   * @param[in] data  收到的字节
   * @param[in] len   字节数
   *
@@ -41,6 +43,8 @@ void cmd_on_tcp_rx(const char *data, int len);
 
 /**
   * @brief    注册给 udp_client 的接收回调
+  *
+  * 🟢 L2 —— 工具：薄包装，和 cmd_on_tcp_rx() 只差来源判断。
   *
   * @param[in] data  这一包的字节
   * @param[in] len   字节数
