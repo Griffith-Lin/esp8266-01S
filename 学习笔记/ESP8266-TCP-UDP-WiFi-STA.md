@@ -11,18 +11,6 @@
 >
 > 配套阅读：[ESP8266-NVS.md](ESP8266-NVS.md)（凭据存在哪）、ESP8266开发流程.md §9.2（拓扑与四值表）、§9.7（连不上怎么查）
 
-## 目录
-
-1. [TCP 和 UDP 的区别](#1-tcp-和-udp-的区别)
-2. [TCP 的 API 怎么用](#2-tcp-的-api-怎么用)
-3. [UDP 的 API 怎么用](#3-udp-的-api-怎么用)
-4. [STA 模式的 API 怎么用](#4-sta-模式的-api-怎么用)
-5. [模块的架构](#5-模块的架构)
-6. [附：这两个模块里反复出现的两个 C 坑](#6-附这两个模块里反复出现的两个-c-坑)
-7. [一页速查](#7-一页速查)
-
----
-
 ## 1. TCP 和 UDP 的区别
 
 ### 1.1 一张表
@@ -404,7 +392,7 @@ STA = **Station**，也就是"客户端模式"：**ESP8266 去连别人的热点
 ### 4.1 初始化顺序
 
 顺序是死的，每一行的理由都不一样（全部在
-[wifi_sta.c:400-474](../main/wifi_sta.c#L400-L474)）：
+[wifi_sta.c:485-562](../main/wifi_sta.c#L485-562)）：
 
 | # | 调用 | 为什么在这个位置 |
 | --- | --- | --- |
@@ -420,7 +408,7 @@ STA = **Station**，也就是"客户端模式"：**ESP8266 去连别人的热点
 
 **⑥ ⑦ ⑧ ⑨ 的顺序值得单独说**：`esp_wifi_start()` 会触发
 `WIFI_EVENT_STA_START` 事件，而**连接动作是在那个事件的处理函数里发起的**
-（[wifi_sta.c:307-311](../main/wifi_sta.c#L307-L311)）：
+（[wifi_sta.c:323-327](../main/wifi_sta.c#L323-327)）：
 
 ```c
 if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -438,7 +426,7 @@ if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
 
 #### ⑤ 那句冗余的 `esp_wifi_set_ps()`
 
-[wifi_sta.c:441-450](../main/wifi_sta.c#L441-L450) 把它标成了"冗余"，
+[wifi_sta.c:526-535](../main/wifi_sta.c#L526-535) 把它标成了"冗余"，
 依据是 `esp_wifi.h:413` 的原文：
 
 ```text
@@ -457,7 +445,7 @@ if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
 #### ⑧ 灌进去的 `wifi_config_t`
 
 `esp_wifi_set_config()` 收的是一个结构体，两个地方必须小心
-（[wifi_sta.c:276-281](../main/wifi_sta.c#L276-L281)）：
+（[wifi_sta.c:292-297](../main/wifi_sta.c#L292-297)）：
 
 ```c
 wifi_config_t cfg;
@@ -496,17 +484,17 @@ C 标准专门允许用字符串字面量**初始化**字符数组
 #### 谁记得住 `ssid` / `password` 的字节数上限？
 
 `wifi_config_t` 里的 `ssid[32]` / `password[64]` 是 **802.11 协议**规定的上限
-（`SSID_MAX_LEN` / `PASS_MAX_LEN`，[wifi_sta.c:78-81](../main/wifi_sta.c#L78-L81)）。
+（`SSID_MAX_LEN` / `PASS_MAX_LEN`，[wifi_sta.c:83-86](../main/wifi_sta.c#L83-86)）。
 注意**单位为字节**，不是字符 —— 一个中文 SSID 一个字 3 字节。
 
-> ⚠️ 长度**必须在存进 NVS 之前**检查（[wifi_sta.c:498-499](../main/wifi_sta.c#L498-L499)）：
+> ⚠️ 长度**必须在存进 NVS 之前**检查（[wifi_sta.c:586-587](../main/wifi_sta.c#L586-587)）：
 > 超长的 SSID 被截断后照样能写进 NVS，但永远连不上 ——
 > 那种"命令说成功了、就是连不上"的毛病最难查。
 
 #### 接口名的新旧写法
 
 代码里写的是 `esp_wifi_set_config(ESP_IF_WIFI_STA, &cfg)`
-（[wifi_sta.c:281](../main/wifi_sta.c#L281)）。
+（[wifi_sta.c:297](../main/wifi_sta.c#L297)）。
 你在别的文档里会看到 `WIFI_IF_STA` —— 两者**是同一个东西**：
 
 ```c
@@ -534,7 +522,7 @@ esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP, &wifi_event_handler,
 | `&wifi_event_handler` | 事件来了调谁 |
 | `NULL` | 传给回调的自定义参数（本模块用不上） |
 
-回调签名是固定的，四个参数（[wifi_sta.c:304-305](../main/wifi_sta.c#L304-L305)）：
+回调签名是固定的，四个参数（[wifi_sta.c:320-321](../main/wifi_sta.c#L320-321)）：
 
 ```c
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -573,17 +561,17 @@ esp_event_loop_args_t loop_args = {
 | --- | --- | --- |
 | `sys_evt`（跑事件回调） | **10** | SDK 内部 |
 | `tcp_client` / `udp_client` | 5 | [tcp_client.c:232](../main/tcp_client.c#L232) / [udp_client.c:275](../main/udp_client.c#L275) |
-| `wifi_mgr`（状态上报） | 4 | [wifi_sta.c:468](../main/wifi_sta.c#L468) |
+| `wifi_mgr`（状态上报） | 4 | [wifi_sta.c:556](../main/wifi_sta.c#L556) |
 
 **事件回调跑在优先级 10 的任务上，比传输任务高一倍。** 这就是为什么
-[wifi_sta.c:294-296](../main/wifi_sta.c#L294-L296) 那条警告这么重：
+[wifi_sta.c:310-312](../main/wifi_sta.c#L310-312) 那条警告这么重：
 
 > 绝对不能在这里做阻塞操作（比如 `vTaskDelay`），否则整个 WiFi 状态机都会停摆。
 
 一个优先级 10 的任务睡 1 秒，优先级 5 的传输任务才轮得上 —— 而且**在事件回调里
 阻塞，等于把整个事件循环堵住**：所有 WiFi 状态变化、所有 IP 事件都会排在后面没人处理。
 
-所以"重连"这件事在项目里的写法是（[wifi_sta.c:325-328](../main/wifi_sta.c#L325-L328)）：
+所以"重连"这件事在项目里的写法是（[wifi_sta.c:341-344](../main/wifi_sta.c#L341-344)）：
 
 ```c
 /* 直接重连、不在这里 sleep：esp_wifi_connect() 内部要先扫一遍信道、
@@ -592,7 +580,7 @@ esp_wifi_connect();
 ```
 
 **"等一会儿"这个活儿本身是阻塞的，所以它必须挪到别的地方去** ——
-这就是 `wifi_mgr_task` 存在的唯一理由（[wifi_sta.c:359-361](../main/wifi_sta.c#L359-L361)）。
+这就是 `wifi_mgr_task` 存在的唯一理由（[wifi_sta.c:420-423](../main/wifi_sta.c#L420-423)）。
 
 ### 4.3 事件位：回调和任务之间怎么传话
 
@@ -600,22 +588,22 @@ esp_wifi_connect();
 **事件组**（EventGroup）：
 
 ```c
-static EventGroupHandle_t s_wifi_event_group;   /* wifi_sta.c:120 */
+static EventGroupHandle_t s_wifi_event_group;   /* wifi_sta.c:128 */
 #define WIFI_GOT_IP_BIT   BIT0                   /* :125 */
 #define WIFI_DOWN_BIT     BIT1                   /* :130 */
 ```
 
 | 谁 | 干什么 | 位置 |
 | --- | --- | --- |
-| 回调（`sys_evt` 任务） | 拿到 IP → `SetBits(GOT_IP)` | [wifi_sta.c:345](../main/wifi_sta.c#L345) |
-| 回调（`sys_evt` 任务） | 断开 → `ClearBits(GOT_IP)` + `SetBits(DOWN)` | [wifi_sta.c:320-321](../main/wifi_sta.c#L320-L321) |
-| 传输任务 | `xEventGroupWaitBits(GOT_IP, 无限等)` | [wifi_sta.c:483-486](../main/wifi_sta.c#L483-L486) |
-| `wifi_mgr` | 等到 `DOWN` 或被超时唤醒 | [wifi_sta.c:373-388](../main/wifi_sta.c#L373-L388) |
+| 回调（`sys_evt` 任务） | 拿到 IP → `SetBits(GOT_IP)` | [wifi_sta.c:361](../main/wifi_sta.c#L361) |
+| 回调（`sys_evt` 任务） | 断开 → `ClearBits(GOT_IP)` + `SetBits(DOWN)` | [wifi_sta.c:336-337](../main/wifi_sta.c#L336-337) |
+| 传输任务 | `xEventGroupWaitBits(GOT_IP, 无限等)` | [wifi_sta.c:571-574](../main/wifi_sta.c#L571-574) |
+| `wifi_mgr` | 等到 `DOWN` 或被超时唤醒 | [wifi_sta.c:435-473](../main/wifi_sta.c#L435-473) |
 
 两个容易写错的地方，代码里都标了：
 
 **① `wifi_sta_wait_ip()` 用的是 `pdFALSE` —— 不清除事件位**
-（[wifi_sta.c:484](../main/wifi_sta.c#L484)）：
+（[wifi_sta.c:572](../main/wifi_sta.c#L572)）：
 
 ```c
 EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
@@ -628,7 +616,7 @@ EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
 后面的永远等不到。
 
 **② `wifi_mgr_task` 里两个 `xEventGroupWaitBits` 的 `pdFALSE` 含义不同**
-（[wifi_sta.c:381-385](../main/wifi_sta.c#L381-L385)）：
+（[wifi_sta.c:443-447](../main/wifi_sta.c#L443-447)）：
 
 ```c
 if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
@@ -645,7 +633,7 @@ if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
 
 ### 4.4 "关联上" ≠ "连上了"
 
-这是 STA 模式里最重要的一个区分，项目在 [wifi_sta.c:330-332](../main/wifi_sta.c#L330-L332)
+这是 STA 模式里最重要的一个区分，项目在 [wifi_sta.c:346-348](../main/wifi_sta.c#L346-348)
 专门标了出来：
 
 | 事件 | 含义 | 此时能通信吗 |
@@ -664,7 +652,7 @@ if (xEventGroupWaitBits(s_wifi_event_group, WIFI_GOT_IP_BIT,
 ### 4.5 断开原因码 `reason`
 
 断开事件带着一个 802.11 的原因码，这是查"连不上"的第一手证据
-（[wifi_sta.c:315-318](../main/wifi_sta.c#L315-L318)）。
+（[wifi_sta.c:331-334](../main/wifi_sta.c#L331-334)）。
 SDK 把这些码定义成了枚举，在 `components/esp8266/include/esp_wifi_types.h:70-101`：
 
 | reason | 宏 | 实际含义 | 去查什么 |
@@ -684,7 +672,7 @@ SDK 把这些码定义成了枚举，在 `components/esp8266/include/esp_wifi_ty
 >
 > **ESP8266 只支持 2.4GHz。** 热点开在 5GHz 上芯片根本扫不到，
 > 现象和"SSID 写错"**一模一样**，都是 reason=201
-> （[wifi_sta.c:42-43](../main/wifi_sta.c#L42-L43)）。
+> （[wifi_sta.c:47-48](../main/wifi_sta.c#L47-48)）。
 
 ### 4.6 换热点的两个 API
 
@@ -693,11 +681,11 @@ esp_wifi_set_config(ESP_IF_WIFI_STA, &cfg);   /* 改配置 */
 esp_wifi_disconnect();                        /* 断开 → 触发 DISCONNECTED 事件 */
 ```
 
-顺序**不能反**（[wifi_sta.c:522](../main/wifi_sta.c#L522)）：
+顺序**不能反**（[wifi_sta.c:610](../main/wifi_sta.c#L610)）：
 先改配置，再断开重连。反过来的话，断开事件里那个 `esp_wifi_connect()`
 会用**旧配置**去连，然后你会看到"命令说成功了，就是连不上"。
 
-还有一处讲究（[wifi_sta.c:525-532](../main/wifi_sta.c#L525-L532)）：
+还有一处讲究（[wifi_sta.c:613-620](../main/wifi_sta.c#L613-620)）：
 
 ```c
 if (esp_wifi_disconnect() != ESP_OK) {
@@ -785,7 +773,7 @@ tcp_client.c / udp_client.c  ──调用──▶  wifi_sta_wait_ip()   （等�
 传输层要么得 `#include "cmd.h"` 反向依赖（那就成了面条），
 要么得知道"开灯"是什么（那就不是纯传输层了）。
 
-注册这个动作在 `app_main()` 里（[main.c:89-90](../main/main.c#L89-L90)）：
+注册这个动作在 `app_main()` 里（[main.c:100-101](../main/main.c#L100-101)）：
 
 ```c
 /* ③ 注册回调 —— 必须在 link_init() 之前：后者会立刻把链路启动起来，
@@ -808,7 +796,7 @@ udp_client_set_rx_handler(cmd_on_udp_rx);
 ### 5.3 四条任务
 
 `app_main()` 本身不是任务的主体，它只是**把线接起来**
-（[main.c:75-108](../main/main.c#L75-L108)），接完就进一个空的死循环
+（[main.c:81-119](../main/main.c#L81-119)），接完就进一个空的死循环
 （`while(1) vTaskDelay(1000)`）保持存活。
 
 真正干活的是这四条：
@@ -818,7 +806,7 @@ udp_client_set_rx_handler(cmd_on_udp_rx);
 | `sys_evt` | 10 | SDK 的 `esp_event_loop_create_default()` | 跑 WiFi / IP 事件回调 |
 | `tcp_client` | 5 | [tcp_client.c:232](../main/tcp_client.c#L232) | 连接、收发、断了重连 |
 | `udp_client` | 5 | [udp_client.c:275](../main/udp_client.c#L275) | bind、收发、心跳 |
-| `wifi_mgr` | 4 | [wifi_sta.c:468](../main/wifi_sta.c#L468) | 没连上时每 30 秒吭一声 |
+| `wifi_mgr` | 4 | [wifi_sta.c:556](../main/wifi_sta.c#L556) | 没连上时每 30 秒吭一声 |
 
 几个设计上的共同点：
 
@@ -840,7 +828,7 @@ s_running = true;
 所以 `net tcp` / `net udp` 来回切多少次，都不会多出任务来。
 
 **③ UDP 的任务是"懒创建"的**：`app_main()` 里只调 `link_init(LINK_TCP)`
-（[main.c:92-97](../main/main.c#L92-L97)），而 `link_init()` 按传进来的参数
+（[main.c:103-108](../main/main.c#L103-108)），而 `link_init()` 按传进来的参数
 **只启动一条** —— 传 `LINK_TCP` 就只起 TCP。UDP 那条任务要等到第一次
 `net udp` 才会被创建，在那之前一条任务都不多占。
 
@@ -983,7 +971,7 @@ s_link = mode;
 ### 6.1 `strncpy()` 不保证结尾有 `'\0'`
 
 `wifi_sta.c` 里自己写了一个 `copy_str()` 而不用 `strncpy()`
-（[wifi_sta.c:139-147](../main/wifi_sta.c#L139-L147)）：
+（[wifi_sta.c:155-163](../main/wifi_sta.c#L155-163)）：
 
 ```c
 static void copy_str(char *dst, size_t dst_size, const char *src)
@@ -1072,6 +1060,6 @@ STA 初始化顺序：
 - [ESP8266配网踩坑(SmartConfig).md](ESP8266配网踩坑(SmartConfig).md) —— 那条被拆掉的配网路
 - `ESP8266开发流程.md` §9.1（模块分工 —— 本文 §5 的简短版）
 - `ESP8266开发流程.md` §9.2（拓扑与四值表）、§9.4/§9.5（命令解析的两个坑）、
-  §9.6（换热点的操作纪律）、§9.7（连不上怎么查）
+  §9.6（换热点的操作纪律）、§9.7（连不上怎么查）、§10（连不上 30 次后的 AP 配网兜底）
 - `main/tcp_client.h`、`main/udp_client.h`、`main/wifi_sta.h`、
   `main/relay.h`、`main/link.h`、`main/cmd.h` —— 各模块的接口契约

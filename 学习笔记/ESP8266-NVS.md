@@ -7,17 +7,6 @@
 > ⚠️ **§3.3 推翻了项目里现有的一条注释。** 不是补充，是那条注释写错了。
 > 如果只读一节，读那一节。
 
-## 目录
-
-1. [NVS 是什么](#1-nvs-是什么)
-2. [它住在哪：分区表里的 24KB](#2-它住在哪分区表里的-24kb)
-3. [读写它的 API](#3-读写它的-api)
-4. [为什么把 SSID / 密码写进 NVS](#4-为什么把-ssid--密码写进-nvs)
-5. [怎么擦除](#5-怎么擦除)
-6. [一页速查](#6-一页速查)
-
----
-
 ## 1. NVS 是什么
 
 **NVS = Non-Volatile Storage。一块掉电不丢的键值存储。**
@@ -136,7 +125,7 @@ if (key != nullptr && strncmp(key, item.key, Item::MAX_KEY_LENGTH) != 0) { ... }
 
 ### 谁在管这块分区
 
-`nvs_flash_init()`。它在 `wifi_sta_init()` 里被调用（`main/wifi_sta.c:412-418`），
+`nvs_flash_init()`。它在 `wifi_sta_init()` 里被调用（`main/wifi_sta.c:497-503`），
 而且**必须在 `esp_wifi_init()` 之前** —— WiFi 驱动要把校准数据写进 NVS，
 NVS 没挂上，驱动直接启动失败。
 
@@ -251,7 +240,7 @@ nvs_commit()                           nvs_api.cpp:387-397
 2. **删掉它，将来没人知道这里曾经需要它。** 留着一句空操作，配合一句
    说清"为什么留着"的注释，比删掉更安全。
 
-按这两条改完之后，代码里现在的样子是（`main/wifi_sta.c:237-240`）：
+按这两条改完之后，代码里现在的样子是（`main/wifi_sta.c:253-256`）：
 
 ```c
 /* 这一句在本 SDK（v3.4）上是空操作 —— set 已经当场落盘了。
@@ -348,7 +337,7 @@ sHandle->createOrOpenNamespace(ns_name, open_mode == NVS_READWRITE, nsIndex);
 
 ### 理由三：它能和"出厂默认值"叠成三层
 
-这是本项目实际用的结构（`main/wifi_sta.h:25-32` 的注释）：
+这是本项目实际用的结构（`main/wifi_sta.h:26-33` 的注释）：
 
 | 优先级 | 来源 | 什么时候生效 |
 | --- | --- | --- |
@@ -381,7 +370,11 @@ sHandle->createOrOpenNamespace(ns_name, open_mode == NVS_READWRITE, nsIndex);
 ```
 
 反过来做（先改主节点），节点就**再也联系不上了** —— 它还在用旧凭据找旧热点，
-而能给它发命令的那条链路已经不存在了。这时候唯一的办法是拆下来重烧。
+而能给它发命令的那条链路已经不存在了。
+
+这时候还有一条路，但要**人到现场**：节点连续 30 次连不上会自己开热点、
+出一个网页，手机连上去重填（`ESP8266开发流程.md` §10）。
+所以顺序写反的后果从"拆下来重烧"降成了"跑一趟"。
 
 ### 反面：NVS 不是 OTA
 
@@ -449,7 +442,7 @@ esptool.py --port COM8 --baud 115200 erase_region 0x9000 0x6000
 
 ### 5.3 程序内擦
 
-代码里那条路径（`main/wifi_sta.c:412-418`）：
+代码里那条路径（`main/wifi_sta.c:497-503`）：
 
 ```c
 if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -469,7 +462,7 @@ if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
 记得 §2 那张表：24KB 里住着两家人。
 
 所以擦完之后，**WiFi 驱动的校准数据也没了**。这不是问题 —— 下次
-`esp_wifi_init()` 时驱动会自己重新校准并重写一遍（`main/wifi_sta.c:404-411` 记了这件事）。
+`esp_wifi_init()` 时驱动会自己重新校准并重写一遍（`main/wifi_sta.c:489-496` 记了这件事）。
 
 代价只是"第一次上电慢一点"，不是"坏了"。但如果你不知道这件事，
 看到擦完之后启动变慢会以为搞砸了。
@@ -517,7 +510,8 @@ API 顺序（死的）：
 
 ⚠️ 纪律：换热点的顺序不能反
    ① 先发 TCP 命令 wifi <新SSID>,<新密码>   ② 再改主节点
-   反了 → 节点失联 → 只能拆下来重烧
+   反了 → 节点失联 → 跑一趟现场（节点自己开热点，见 开发流程.md §10）
+                    ↑ 曾经是"只能拆下来重烧"，配网模式补上了这一条
 
 擦除怎么选：
   esptool.py erase_region 0x9000 0x6000   ← 想只恢复出厂凭据，用这条
@@ -536,7 +530,8 @@ API 顺序（死的）：
 相关文档：
 
 - `ESP8266开发流程.md` §9.6 —— 换热点时的两种情形和那条操作纪律
-- `ESP8266开发流程.md` §9.7 —— 连不上了怎么查 + 为什么没有配网兜底
+- `ESP8266开发流程.md` §9.7 —— 连不上了怎么查 + 为什么拆掉了 SmartConfig
+- `ESP8266开发流程.md` §10 —— 配网模式：连不上时怎么把新凭据送进 NVS
 - `学习笔记/ESP8266分区表.md` —— 分区表本身（nvs 那 24KB 是怎么划出来的）
 - `学习笔记/ESP8266配网踩坑(SmartConfig).md` —— 另一个"怎么把凭据送进 NVS"的方案，以及为什么放弃它
 - `main/wifi_sta.c` —— 本项目对 NVS 的全部用法（`nvs_load_credentials()` / `nvs_save_credentials()`）
